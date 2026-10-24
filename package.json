@@ -10,6 +10,10 @@
     "#common/*": {
       "types": "./src/common/*",
       "default": "./dist/common/*"
+    },
+    "#users/*": {
+      "types": "./src/users/*",
+      "default": "./dist/users/*"
     }
   },
   "scripts": {
