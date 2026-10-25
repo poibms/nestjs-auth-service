@@ -3,17 +3,23 @@ import { RegisterDto } from './dto/register.dto.js';
 import bcrypt from 'bcrypt';
 import { UsersRepository, EmailAlreadyExistsError } from '#users/index.js';
 import { User } from '../generated/prisma/client.js';
+import { ConfigService } from '@nestjs/config';
+import { Env } from '../config/env.schema.js';
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly usersRepository: UsersRepository) {}
+  constructor(
+    private readonly usersRepository: UsersRepository,
+    private readonly configService: ConfigService<Env, true>,
+  ) {}
 
   async register(
     registerDto: RegisterDto,
   ): Promise<Pick<User, 'id' | 'email' | 'status'>> {
     try {
       const { email, password } = registerDto;
-      const passwordHash = await bcrypt.hash(password, 12);
+      const rounds = this.configService.get('BCRYPT_ROUNDS', { infer: true });
+      const passwordHash = await bcrypt.hash(password, rounds);
       const registeredUser = await this.usersRepository.create({
         email,
         passwordHash,
