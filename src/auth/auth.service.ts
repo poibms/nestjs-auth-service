@@ -20,6 +20,7 @@ export class AuthService {
       const { email, password } = registerDto;
       const rounds = this.configService.get('BCRYPT_ROUNDS', { infer: true });
       const passwordHash = await bcrypt.hash(password, rounds);
+
       const registeredUser = await this.usersRepository.create({
         email,
         passwordHash,
