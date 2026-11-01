@@ -17,11 +17,31 @@ enum UserStatus {
   active
 }
 
+enum ConfirmationMethod {
+  otp
+  magic_link
+}
+
 model User {
-  id           String     @id @default(uuid(7)) @db.Uuid
-  email        String     @unique @db.VarChar(254)
-  passwordHash String     @db.VarChar(60)
-  status       UserStatus @default(pending)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id                       String                    @id @default(uuid(7)) @db.Uuid
+  email                    String                    @unique @db.VarChar(254)
+  passwordHash             String                    @db.VarChar(60)
+  status                   UserStatus                @default(pending)
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  emailConfirmationAttempt EmailConfirmationAttempt?
+}
+
+model EmailConfirmationAttempt {
+  id         String             @id @default(uuid(7)) @db.Uuid
+  method     ConfirmationMethod
+  attempts   Int                @default(0)
+  expiresAt  DateTime
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  secretHash String             @unique @db.Char(64)
+  sentAt     DateTime           @default(now())
+  consumedAt DateTime?
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String             @unique @db.Uuid
 }
