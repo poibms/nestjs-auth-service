@@ -16,6 +16,8 @@ describe('AuthService', () => {
   let confirmationService: {
     generateOtp: Mock<ConfirmationSecretService['generateOtp']>;
     hashOtp: Mock<ConfirmationSecretService['hashOtp']>;
+    generateToken: Mock<ConfirmationSecretService['generateToken']>;
+    hashToken: Mock<ConfirmationSecretService['hashToken']>;
   };
   let emailConfirmationRepository: {
     create: Mock<EmailConfirmationAttemptsRepository['create']>;
@@ -36,7 +38,12 @@ describe('AuthService', () => {
     config = { BCRYPT_ROUNDS: 4 };
     usersRepository = { create: vi.fn() };
     emailConfirmationRepository = { create: vi.fn() };
-    confirmationService = { generateOtp: vi.fn(), hashOtp: vi.fn() };
+    confirmationService = {
+      generateOtp: vi.fn(),
+      hashOtp: vi.fn(),
+      generateToken: vi.fn(),
+      hashToken: vi.fn(),
+    };
     transactionHost = { withTransaction: vi.fn((fn) => fn()) };
 
     const moduleRef = await Test.createTestingModule({
@@ -209,15 +216,95 @@ describe('AuthService', () => {
         );
         expect(emailConfirmationRepository.create).not.toHaveBeenCalled();
       });
+    });
 
-      it('throws on unsupported confirmation method without writing anything', async () => {
+    describe('with magic link confirmation enabled', () => {
+      const token = 'magic-link-token';
+      const secretHash = 'b'.repeat(64);
+      const now = new Date('2026-01-01T00:00:00.000Z');
+      let inTransaction: boolean;
+      let calledInTransaction: { user?: boolean; attempt?: boolean };
+
+      beforeEach(() => {
+        config.REGISTRATION_CONFIRMATION_ENABLED = true;
         config.REGISTRATION_CONFIRMATION_METHOD = 'magic_link';
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(now);
 
-        await expect(service.register(userDto)).rejects.toThrow(
-          'Unsupported confirmation method: magic_link',
+        inTransaction = false;
+        calledInTransaction = {};
+        transactionHost.withTransaction.mockImplementation(async (fn) => {
+          inTransaction = true;
+          try {
+            return await fn();
+          } finally {
+            inTransaction = false;
+          }
+        });
+        usersRepository.create.mockImplementation(async (data) => {
+          calledInTransaction.user = inTransaction;
+          return {
+            id: userId,
+            email: data.email,
+            passwordHash: data.passwordHash,
+            status: data.status,
+            createdAt: now,
+            updatedAt: now,
+          };
+        });
+        emailConfirmationRepository.create.mockImplementation(async () => {
+          calledInTransaction.attempt = inTransaction;
+        });
+        confirmationService.generateToken.mockReturnValue(token);
+        confirmationService.hashToken.mockReturnValue(secretHash);
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('creates pending user with bcrypt hash of the password', async () => {
+        await service.register(userDto);
+        const user = usersRepository.create.mock.calls[0][0];
+        expect(user).toMatchObject({ email: userDto.email, status: 'pending' });
+        expect(await bcrypt.compare(userDto.password, user.passwordHash)).toBe(
+          true,
         );
-        expect(usersRepository.create).not.toHaveBeenCalled();
-        expect(transactionHost.withTransaction).not.toHaveBeenCalled();
+      });
+
+      it('creates user and attempt inside one transaction', async () => {
+        await service.register(userDto);
+        expect(transactionHost.withTransaction).toHaveBeenCalledTimes(1);
+        expect(calledInTransaction).toEqual({ user: true, attempt: true });
+      });
+
+      it('stores HMAC of the token with magic_link method', async () => {
+        await service.register(userDto);
+        expect(confirmationService.hashToken).toHaveBeenCalledWith(token);
+        expect(confirmationService.generateOtp).not.toHaveBeenCalled();
+        expect(confirmationService.hashOtp).not.toHaveBeenCalled();
+        expect(
+          emailConfirmationRepository.create.mock.calls[0][0],
+        ).toMatchObject({ userId, method: 'magic_link', secretHash });
+      });
+
+      it('sets sentAt to now and expiresAt to now + 10 minutes', async () => {
+        await service.register(userDto);
+        const attempt = emailConfirmationRepository.create.mock.calls[0][0];
+        expect(attempt.sentAt).toEqual(now);
+        expect(attempt.expiresAt).toEqual(new Date(now.getTime() + 600 * 1000));
+      });
+
+      it('returns confirmation info without the token or its hash', async () => {
+        const res = await service.register(userDto);
+        const attempt = emailConfirmationRepository.create.mock.calls[0][0];
+        expect(res).toEqual({
+          confirmationRequired: true,
+          method: 'magic_link',
+          attemptId: attempt.id,
+          expiresInSeconds: 600,
+          resendAfterSeconds: 60,
+        });
       });
     });
 

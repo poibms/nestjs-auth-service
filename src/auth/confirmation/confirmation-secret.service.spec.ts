@@ -103,6 +103,44 @@ describe('ConfirmationSecretService', () => {
     });
   });
 
+  describe('generateToken', () => {
+    it('returns base64url of 32 random bytes', () => {
+      const token = service.generateToken();
+
+      expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(Buffer.from(token, 'base64url')).toHaveLength(32);
+    });
+
+    it('returns a different token on each call', () => {
+      expect(service.generateToken()).not.toBe(service.generateToken());
+    });
+  });
+
+  describe('hashToken', () => {
+    const token = 'magic-link-token';
+
+    it('returns 64-char hex (fits CHAR(64))', () => {
+      expect(service.hashToken(token)).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('is deterministic for the same token', () => {
+      expect(service.hashToken(token)).toBe(service.hashToken(token));
+    });
+
+    it('differs for another token', () => {
+      expect(service.hashToken(token)).not.toBe(
+        service.hashToken('another-token'),
+      );
+    });
+
+    it('differs for another secret', () => {
+      const hash = service.hashToken(token);
+      config.CONFIRMATION_HMAC_SECRET = 'y'.repeat(32);
+
+      expect(service.hashToken(token)).not.toBe(hash);
+    });
+  });
+
   describe('verifyOtp', () => {
     let storedHash: string;
 

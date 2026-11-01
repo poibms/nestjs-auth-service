@@ -1,2 +1,2 @@
-export const OTP_TTL_SECONDS = 600;
-export const CONFIRMATION_DELAY_SECONDS = 60;
+export const CONFIRMATION_TTL_SECONDS = 600;
+export const RESEND_COOLDOWN_SECONDS = 600;

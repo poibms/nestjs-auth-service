@@ -1,7 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Env } from '../../config/env.schema.js';
-import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import {
+  createHmac,
+  randomBytes,
+  randomInt,
+  timingSafeEqual,
+} from 'node:crypto';
 
 @Injectable()
 export class ConfirmationSecretService {
@@ -34,5 +39,16 @@ export class ConfirmationSecretService {
     const b = Buffer.from(storedHash, 'hex');
     if (a.length !== b.length) return false;
     return timingSafeEqual(a, b);
+  }
+
+  generateToken(): string {
+    return randomBytes(32).toString('base64url');
+  }
+
+  hashToken(token: string): string {
+    const hmacSecret = this.secret;
+    const hmac = createHmac('sha256', hmacSecret);
+    hmac.update(token);
+    return hmac.digest('hex');
   }
 }

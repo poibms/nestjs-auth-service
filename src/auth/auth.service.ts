@@ -2,19 +2,28 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { RegisterDto } from './dto/register.dto.js';
 import bcrypt from 'bcrypt';
 import { UsersRepository, EmailAlreadyExistsError } from '#users/index.js';
-import { ConfirmationMethod, User } from '../generated/prisma/client.js';
+import {
+  ConfirmationMethod,
+  User,
+  UserStatus,
+} from '../generated/prisma/client.js';
 import { ConfigService } from '@nestjs/config';
 import { Env } from '../config/env.schema.js';
 import { ConfirmationSecretService } from './confirmation/confirmation-secret.service.js';
 import { EmailConfirmationAttemptsRepository } from './confirmation/email-confirmation-attempts.repository.js';
 import { randomUUID } from 'node:crypto';
 import {
-  CONFIRMATION_DELAY_SECONDS,
-  OTP_TTL_SECONDS,
+  CONFIRMATION_TTL_SECONDS,
+  RESEND_COOLDOWN_SECONDS,
 } from './confirmation/confirmation.constants.js';
 import { TransactionHost } from '@nestjs-cls/transactional';
 
 export type RegisteredUserResponse = Pick<User, 'id' | 'email' | 'status'>;
+
+interface SecretStrategy {
+  generate(): string;
+  hash(attemptId: string, secret: string): string;
+}
 
 export type ConfirmationRequiredResponse = {
   confirmationRequired: true;
@@ -47,18 +56,15 @@ export class AuthService {
           infer: true,
         })
       ) {
-        return await this.registerActive(email, passwordHash);
+        const user = await this.createUser(email, passwordHash, 'active');
+        return { id: user.id, email: user.email, status: user.status };
       }
 
       const method = this.configService.get(
         'REGISTRATION_CONFIRMATION_METHOD',
         { infer: true },
       );
-      if (method === 'otp') {
-        return await this.registerWithOtp(email, passwordHash);
-      }
-
-      throw new Error(`Unsupported confirmation method: ${method}`);
+      return await this.registerWithConfirmation(email, passwordHash, method);
     } catch (err) {
       if (err instanceof EmailAlreadyExistsError) {
         throw new ConflictException('Email is already registered');
@@ -67,63 +73,67 @@ export class AuthService {
     }
   }
 
-  private async registerActive(
+  private createUser(
     email: string,
     passwordHash: string,
-  ): Promise<RegisteredUserResponse> {
-    const user = await this.usersRepository.create({
-      email,
-      passwordHash,
-      status: 'active',
-    });
-
-    return { id: user.id, email: user.email, status: user.status };
+    status: UserStatus,
+  ): Promise<User> {
+    return this.usersRepository.create({ email, passwordHash, status });
   }
 
-  private async registerWithOtp(
+  private async registerWithConfirmation(
     email: string,
     passwordHash: string,
+    method: ConfirmationMethod,
   ): Promise<ConfirmationRequiredResponse> {
     const { attemptId } = await this.transactionHost.withTransaction(
       async () => {
-        const user = await this.usersRepository.create({
-          email,
-          passwordHash,
-          status: 'pending',
-        });
-        return this.saveOtp(user.id);
+        const user = await this.createUser(email, passwordHash, 'pending');
+        return this.createConfirmationAttempt(user.id, method);
       },
     );
-    // TODO: send code
+    // TODO: send secret via Mailer (after commit)
 
     return {
       confirmationRequired: true,
-      method: 'otp',
+      method,
       attemptId,
-      expiresInSeconds: OTP_TTL_SECONDS,
-      resendAfterSeconds: CONFIRMATION_DELAY_SECONDS,
+      expiresInSeconds: CONFIRMATION_TTL_SECONDS,
+      resendAfterSeconds: RESEND_COOLDOWN_SECONDS,
     };
   }
 
-  private async saveOtp(
+  private async createConfirmationAttempt(
     userId: string,
-  ): Promise<{ attemptId: string; code: string }> {
+    method: ConfirmationMethod,
+  ): Promise<{ attemptId: string; secret: string }> {
+    const strategy = this.strategies[method];
     const attemptId = randomUUID();
-
-    const otp = this.confirmationSecretService.generateOtp();
-    const hashedOtp = this.confirmationSecretService.hashOtp(attemptId, otp);
-
+    const secret = strategy.generate();
     const now = Date.now();
 
     await this.emailConfirmationAttemptsRepository.create({
       id: attemptId,
-      secretHash: hashedOtp,
-      method: 'otp',
+      secretHash: strategy.hash(attemptId, secret),
+      method,
       userId,
-      expiresAt: new Date(now + OTP_TTL_SECONDS * 1000),
+      expiresAt: new Date(now + CONFIRMATION_TTL_SECONDS * 1000),
       sentAt: new Date(now),
     });
 
-    return { attemptId, code: otp };
+    return { attemptId, secret };
   }
+
+  private readonly strategies: Record<ConfirmationMethod, SecretStrategy> = {
+    otp: {
+      generate: () => this.confirmationSecretService.generateOtp(),
+      hash: (attemptId, otp) =>
+        this.confirmationSecretService.hashOtp(attemptId, otp),
+    },
+    magic_link: {
+      generate: () => this.confirmationSecretService.generateToken(),
+      hash: (_attemptId, token) =>
+        this.confirmationSecretService.hashToken(token),
+    },
+  };
 }
