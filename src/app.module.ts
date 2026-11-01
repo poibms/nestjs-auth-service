@@ -7,6 +7,10 @@ import { ZodValidationPipe } from './common/pipes/zod-validation.pipe.js';
 import { ConfigModule } from '@nestjs/config';
 import { envSchema } from './config/env.schema.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { ClsModule } from 'nestjs-cls';
+import { ClsPluginTransactional } from '@nestjs-cls/transactional';
+import { TransactionalAdapterPrisma } from '@nestjs-cls/transactional-adapter-prisma';
+import { PrismaService } from './prisma/prisma.service.js';
 
 @Module({
   imports: [
@@ -16,6 +20,17 @@ import { PrismaModule } from './prisma/prisma.module.js';
       validate: (config) => envSchema.parse(config),
     }),
     PrismaModule,
+    ClsModule.forRoot({
+      global: true,
+      plugins: [
+        new ClsPluginTransactional({
+          adapter: new TransactionalAdapterPrisma({
+            prismaInjectionToken: PrismaService,
+          }),
+          imports: [PrismaModule],
+        }),
+      ],
+    }),
   ],
   controllers: [AppController],
   providers: [

@@ -1,0 +1,2 @@
+export const OTP_TTL_SECONDS = 600;
+export const CONFIRMATION_DELAY_SECONDS = 60;

@@ -5,11 +5,15 @@ import { Mock } from 'vitest';
 import { UserStatus } from '../generated/prisma/enums.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { EmailAlreadyExistsError } from './errors/email-already-exists.error.js';
+import { TransactionHost } from '@nestjs-cls/transactional';
 
 describe('UsersRepository', () => {
   let repository: UsersRepository;
-  let prismaService: {
-    user: { create: Mock<PrismaService['user']['create']> };
+
+  let transactionHost: {
+    tx: {
+      user: { create: Mock<PrismaService['user']['create']> };
+    };
   };
 
   const createData: Parameters<UsersRepository['create']>[0] = {
@@ -19,11 +23,11 @@ describe('UsersRepository', () => {
   };
 
   beforeEach(async () => {
-    prismaService = { user: { create: vi.fn() } };
+    transactionHost = { tx: { user: { create: vi.fn() } } };
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersRepository,
-        { provide: PrismaService, useValue: prismaService },
+        { provide: TransactionHost, useValue: transactionHost },
       ],
     }).compile();
 
@@ -42,12 +46,12 @@ describe('UsersRepository', () => {
     };
 
     beforeEach(() => {
-      prismaService.user.create.mockResolvedValue(createdUser);
+      transactionHost.tx.user.create.mockResolvedValue(createdUser);
     });
 
     it('returns created user', async () => {
       const result = await repository.create(createData);
-      expect(prismaService.user.create).toHaveBeenCalledWith({
+      expect(transactionHost.tx.user.create).toHaveBeenCalledWith({
         data: createData,
       });
       expect(result).toBe(createdUser);
@@ -63,7 +67,7 @@ describe('UsersRepository', () => {
           },
         );
 
-        prismaService.user.create.mockRejectedValue(error);
+        transactionHost.tx.user.create.mockRejectedValue(error);
         await expect(repository.create(createData)).rejects.toBeInstanceOf(
           EmailAlreadyExistsError,
         );
@@ -77,14 +81,14 @@ describe('UsersRepository', () => {
             clientVersion: 'test',
           },
         );
-        prismaService.user.create.mockRejectedValue(error);
+        transactionHost.tx.user.create.mockRejectedValue(error);
         await expect(repository.create(createData)).rejects.toBe(error);
       });
 
       it('rethrows non-Prisma errors unchanged', async () => {
         const error = new Error('connection lost');
 
-        prismaService.user.create.mockRejectedValue(error);
+        transactionHost.tx.user.create.mockRejectedValue(error);
         await expect(repository.create(createData)).rejects.toBe(error);
       });
     });
