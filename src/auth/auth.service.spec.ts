@@ -227,13 +227,19 @@ describe('AuthService', () => {
         await service.register(userDto);
 
         expect(mailerService.send).toHaveBeenCalledTimes(1);
-        expect(mailerService.send).toHaveBeenCalledWith(
-          expect.objectContaining({
-            to: userDto.email,
-            text: expect.stringContaining(otp),
-          }),
-        );
+        expect(mailerService.send).toHaveBeenCalledWith({
+          to: userDto.email,
+          subject: expect.any(String),
+          text: expect.stringContaining(otp),
+        });
         expect(sentInTransaction).toBe(false);
+      });
+
+      it('mentions the code lifetime in the email', async () => {
+        await service.register(userDto);
+        expect(mailerService.send.mock.calls[0][0].text).toContain(
+          'expires in 10 minutes',
+        );
       });
 
       it('does not send email when user creation fails', async () => {
@@ -255,6 +261,7 @@ describe('AuthService', () => {
 
     describe('with magic link confirmation enabled', () => {
       const token = 'magic-link-token';
+      const confirmUrl = 'http://localhost:5173/confirm-email';
       const secretHash = 'b'.repeat(64);
       const now = new Date('2026-01-01T00:00:00.000Z');
       let inTransaction: boolean;
@@ -263,6 +270,7 @@ describe('AuthService', () => {
       beforeEach(() => {
         config.REGISTRATION_CONFIRMATION_ENABLED = true;
         config.REGISTRATION_CONFIRMATION_METHOD = 'magic_link';
+        config.REGISTRATION_CONFIRM_URL = confirmUrl;
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(now);
 
@@ -330,7 +338,7 @@ describe('AuthService', () => {
         expect(attempt.expiresAt).toEqual(new Date(now.getTime() + 600 * 1000));
       });
 
-      it('sends the token to the user email after the transaction', async () => {
+      it('sends the confirmation link to the user email after the transaction', async () => {
         let sentInTransaction: boolean | undefined;
         mailerService.send.mockImplementation(async () => {
           sentInTransaction = inTransaction;
@@ -339,13 +347,38 @@ describe('AuthService', () => {
         await service.register(userDto);
 
         expect(mailerService.send).toHaveBeenCalledTimes(1);
-        expect(mailerService.send).toHaveBeenCalledWith(
-          expect.objectContaining({
-            to: userDto.email,
-            text: expect.stringContaining(token),
-          }),
-        );
+        expect(mailerService.send).toHaveBeenCalledWith({
+          to: userDto.email,
+          subject: expect.any(String),
+          text: expect.stringContaining(`${confirmUrl}?token=${token}`),
+        });
         expect(sentInTransaction).toBe(false);
+      });
+
+      it('mentions the link lifetime in the email', async () => {
+        await service.register(userDto);
+        expect(mailerService.send.mock.calls[0][0].text).toContain(
+          'expires in 10 minutes',
+        );
+      });
+
+      it('keeps existing query params of REGISTRATION_CONFIRM_URL', async () => {
+        config.REGISTRATION_CONFIRM_URL = `${confirmUrl}?lang=ru`;
+
+        await service.register(userDto);
+
+        expect(mailerService.send.mock.calls[0][0].text).toContain(
+          `${confirmUrl}?lang=ru&token=${token}`,
+        );
+      });
+
+      it('fails without sending email when REGISTRATION_CONFIRM_URL is unset', async () => {
+        delete config.REGISTRATION_CONFIRM_URL;
+
+        await expect(service.register(userDto)).rejects.toThrow(
+          'REGISTRATION_CONFIRM_URL',
+        );
+        expect(mailerService.send).not.toHaveBeenCalled();
       });
 
       it('returns confirmation info without the token or its hash', async () => {

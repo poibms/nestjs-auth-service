@@ -19,11 +19,16 @@ import {
 import { TransactionHost } from '@nestjs-cls/transactional';
 import { MailerService } from '../mailer/mailer.service.js';
 
+const CONFIRMATION_TTL_MINUTES = CONFIRMATION_TTL_SECONDS / 60;
+
 export type RegisteredUserResponse = Pick<User, 'id' | 'email' | 'status'>;
+
+type MailContent = { subject: string; text: string };
 
 interface SecretStrategy {
   generate(): string;
   hash(attemptId: string, secret: string): string;
+  buildMail(secret: string): MailContent;
 }
 
 export type ConfirmationRequiredResponse = {
@@ -88,16 +93,20 @@ export class AuthService {
     passwordHash: string,
     method: ConfirmationMethod,
   ): Promise<ConfirmationRequiredResponse> {
-    const { attemptId, secret } = await this.transactionHost.withTransaction(
+    const { attemptId, mail } = await this.transactionHost.withTransaction(
       async () => {
         const user = await this.createUser(email, passwordHash, 'pending');
-        return this.createConfirmationAttempt(user.id, method);
+        const { attemptId, secret } = await this.createConfirmationAttempt(
+          user.id,
+          method,
+        );
+        return { attemptId, mail: this.strategies[method].buildMail(secret) };
       },
     );
 
     await this.mailerService.send({
-      subject: 'Email Confirmation',
-      text: secret,
+      subject: mail.subject,
+      text: mail.text,
       to: email,
     });
 
@@ -136,11 +145,36 @@ export class AuthService {
       generate: () => this.confirmationSecretService.generateOtp(),
       hash: (attemptId, otp) =>
         this.confirmationSecretService.hashOtp(attemptId, otp),
+      buildMail: (secret) => this.generateOtpMail(secret),
     },
     magic_link: {
       generate: () => this.confirmationSecretService.generateToken(),
       hash: (_attemptId, token) =>
         this.confirmationSecretService.hashToken(token),
+      buildMail: (secret) => this.generateMagicLinkMail(secret),
     },
   };
+
+  private generateOtpMail(secret: string): MailContent {
+    return {
+      text: `Hello! Here is your code for confirm account: ${secret}. It expires in ${CONFIRMATION_TTL_MINUTES} minutes.`,
+      subject: 'Code for account verification',
+    };
+  }
+
+  private generateMagicLinkMail(secret: string): MailContent {
+    const confirmUrl = this.configService.get('REGISTRATION_CONFIRM_URL', {
+      infer: true,
+    });
+
+    if (!confirmUrl) throw new Error('REGISTRATION_CONFIRM_URL unset');
+
+    const url = new URL(confirmUrl);
+    url.searchParams.set('token', secret);
+
+    return {
+      text: `Hello, please visit ${url} to verify your account. The link expires in ${CONFIRMATION_TTL_MINUTES} minutes.`,
+      subject: 'Magic url for account verification',
+    };
+  }
 }
