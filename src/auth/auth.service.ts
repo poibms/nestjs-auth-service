@@ -17,6 +17,7 @@ import {
   RESEND_COOLDOWN_SECONDS,
 } from './confirmation/confirmation.constants.js';
 import { TransactionHost } from '@nestjs-cls/transactional';
+import { MailerService } from '../mailer/mailer.service.js';
 
 export type RegisteredUserResponse = Pick<User, 'id' | 'email' | 'status'>;
 
@@ -41,6 +42,7 @@ export class AuthService {
     private readonly confirmationSecretService: ConfirmationSecretService,
     private readonly emailConfirmationAttemptsRepository: EmailConfirmationAttemptsRepository,
     private readonly transactionHost: TransactionHost,
+    private readonly mailerService: MailerService,
   ) {}
 
   async register(
@@ -86,13 +88,18 @@ export class AuthService {
     passwordHash: string,
     method: ConfirmationMethod,
   ): Promise<ConfirmationRequiredResponse> {
-    const { attemptId } = await this.transactionHost.withTransaction(
+    const { attemptId, secret } = await this.transactionHost.withTransaction(
       async () => {
         const user = await this.createUser(email, passwordHash, 'pending');
         return this.createConfirmationAttempt(user.id, method);
       },
     );
-    // TODO: send secret via Mailer (after commit)
+
+    await this.mailerService.send({
+      subject: 'Email Confirmation',
+      text: secret,
+      to: email,
+    });
 
     return {
       confirmationRequired: true,

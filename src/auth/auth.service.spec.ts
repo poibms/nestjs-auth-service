@@ -9,6 +9,7 @@ import { ConflictException } from '@nestjs/common';
 import { EmailConfirmationAttemptsRepository } from './confirmation/email-confirmation-attempts.repository.js';
 import { ConfirmationSecretService } from './confirmation/confirmation-secret.service.js';
 import { TransactionHost } from '@nestjs-cls/transactional';
+import { MailerService } from '../mailer/mailer.service.js';
 
 describe('AuthService', () => {
   let service: AuthService;
@@ -26,6 +27,8 @@ describe('AuthService', () => {
   let transactionHost: {
     withTransaction: Mock<(fn: () => Promise<unknown>) => Promise<unknown>>;
   };
+
+  let mailerService: { send: Mock<MailerService['send']> };
 
   let config: Record<string, unknown> = {};
 
@@ -45,6 +48,7 @@ describe('AuthService', () => {
       hashToken: vi.fn(),
     };
     transactionHost = { withTransaction: vi.fn((fn) => fn()) };
+    mailerService = { send: vi.fn() };
 
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -60,6 +64,7 @@ describe('AuthService', () => {
           useValue: { get: (key: string) => config[key] },
         },
         { provide: TransactionHost, useValue: transactionHost },
+        { provide: MailerService, useValue: mailerService },
       ],
     }).compile();
 
@@ -115,6 +120,11 @@ describe('AuthService', () => {
       await service.register(userDto);
       expect(transactionHost.withTransaction).not.toHaveBeenCalled();
       expect(emailConfirmationRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('does not send email when confirmation is disabled', async () => {
+      await service.register(userDto);
+      expect(mailerService.send).not.toHaveBeenCalled();
     });
 
     describe('with OTP confirmation enabled', () => {
@@ -208,6 +218,31 @@ describe('AuthService', () => {
         });
       });
 
+      it('sends the code to the user email after the transaction', async () => {
+        let sentInTransaction: boolean | undefined;
+        mailerService.send.mockImplementation(async () => {
+          sentInTransaction = inTransaction;
+        });
+
+        await service.register(userDto);
+
+        expect(mailerService.send).toHaveBeenCalledTimes(1);
+        expect(mailerService.send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            to: userDto.email,
+            text: expect.stringContaining(otp),
+          }),
+        );
+        expect(sentInTransaction).toBe(false);
+      });
+
+      it('does not send email when user creation fails', async () => {
+        usersRepository.create.mockRejectedValue(new EmailAlreadyExistsError());
+
+        await expect(service.register(userDto)).rejects.toThrow();
+        expect(mailerService.send).not.toHaveBeenCalled();
+      });
+
       it('maps EmailAlreadyExistsError to ConflictException without creating attempt', async () => {
         usersRepository.create.mockRejectedValue(new EmailAlreadyExistsError());
 
@@ -293,6 +328,24 @@ describe('AuthService', () => {
         const attempt = emailConfirmationRepository.create.mock.calls[0][0];
         expect(attempt.sentAt).toEqual(now);
         expect(attempt.expiresAt).toEqual(new Date(now.getTime() + 600 * 1000));
+      });
+
+      it('sends the token to the user email after the transaction', async () => {
+        let sentInTransaction: boolean | undefined;
+        mailerService.send.mockImplementation(async () => {
+          sentInTransaction = inTransaction;
+        });
+
+        await service.register(userDto);
+
+        expect(mailerService.send).toHaveBeenCalledTimes(1);
+        expect(mailerService.send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            to: userDto.email,
+            text: expect.stringContaining(token),
+          }),
+        );
+        expect(sentInTransaction).toBe(false);
       });
 
       it('returns confirmation info without the token or its hash', async () => {

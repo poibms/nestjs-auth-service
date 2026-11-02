@@ -6,6 +6,8 @@ type RawEnv = z.input<typeof envSchema>;
 describe('envSchema', () => {
   const base: RawEnv = {
     DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
+    SMTP_HOST: 'localhost',
+    MAIL_FROM: 'no-reply@auth-service.local',
   };
   const secret = 'x'.repeat(32);
 
@@ -13,7 +15,7 @@ describe('envSchema', () => {
     envSchema.safeParse(input).error?.issues.map((issue) => issue.path);
 
   describe('confirmation disabled', () => {
-    it('applies defaults when only DATABASE_URL is set', () => {
+    it('applies defaults when only required vars are set', () => {
       const result = envSchema.safeParse(base);
 
       expect(result.success).toBe(true);
@@ -21,6 +23,7 @@ describe('envSchema', () => {
         BCRYPT_ROUNDS: 12,
         REGISTRATION_CONFIRMATION_ENABLED: false,
         REGISTRATION_CONFIRMATION_METHOD: 'otp',
+        SMTP_PORT: 1025,
       });
     });
 
@@ -128,6 +131,35 @@ describe('envSchema', () => {
       expect(
         issuePaths({ ...base, REGISTRATION_CONFIRM_URL: 'not-a-url' }),
       ).toEqual([['REGISTRATION_CONFIRM_URL']]);
+    });
+  });
+
+  describe('mail', () => {
+    it('requires SMTP_HOST and MAIL_FROM', () => {
+      const { SMTP_HOST: _host, MAIL_FROM: _from, ...rest } = base;
+      expect(issuePaths(rest as RawEnv)).toEqual([
+        ['SMTP_HOST'],
+        ['MAIL_FROM'],
+      ]);
+    });
+
+    it('rejects invalid MAIL_FROM', () => {
+      expect(issuePaths({ ...base, MAIL_FROM: 'not-an-email' })).toEqual([
+        ['MAIL_FROM'],
+      ]);
+    });
+
+    it('coerces SMTP_PORT to number', () => {
+      const result = envSchema.safeParse({ ...base, SMTP_PORT: '2525' });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.SMTP_PORT).toBe(2525);
+    });
+
+    it('rejects non-integer SMTP_PORT', () => {
+      expect(issuePaths({ ...base, SMTP_PORT: '25.5' })).toEqual([
+        ['SMTP_PORT'],
+      ]);
     });
   });
 });
