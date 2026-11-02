@@ -1,4 +1,8 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { RegisterDto } from './dto/register.dto.js';
 import bcrypt from 'bcrypt';
 import { UsersRepository, EmailAlreadyExistsError } from '#users/index.js';
@@ -100,15 +104,25 @@ export class AuthService {
           user.id,
           method,
         );
+
         return { attemptId, mail: this.strategies[method].buildMail(secret) };
       },
     );
+    try {
+      await this.mailerService.send({
+        to: email,
+        ...mail,
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        console.log('Failed to send confirmation email', err.message);
+      }
 
-    await this.mailerService.send({
-      subject: mail.subject,
-      text: mail.text,
-      to: email,
-    });
+      throw new ServiceUnavailableException(
+        'Confirmation email could not be sent',
+        { cause: err },
+      );
+    }
 
     return {
       confirmationRequired: true,

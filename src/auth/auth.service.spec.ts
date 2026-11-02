@@ -5,7 +5,7 @@ import { AuthService } from './auth.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { Mock } from 'vitest';
 import bcrypt from 'bcrypt';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { EmailConfirmationAttemptsRepository } from './confirmation/email-confirmation-attempts.repository.js';
 import { ConfirmationSecretService } from './confirmation/confirmation-secret.service.js';
 import { TransactionHost } from '@nestjs-cls/transactional';
@@ -246,6 +246,39 @@ describe('AuthService', () => {
         usersRepository.create.mockRejectedValue(new EmailAlreadyExistsError());
 
         await expect(service.register(userDto)).rejects.toThrow();
+        expect(mailerService.send).not.toHaveBeenCalled();
+      });
+
+      it('throws ServiceUnavailableException with cause when email sending fails', async () => {
+        const smtpError = new Error('connect ECONNREFUSED 127.0.0.1:1025');
+        mailerService.send.mockRejectedValue(smtpError);
+
+        const error = await service.register(userDto).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ServiceUnavailableException);
+        expect((error as ServiceUnavailableException).cause).toBe(smtpError);
+      });
+
+      it('keeps pending user and attempt when email sending fails', async () => {
+        mailerService.send.mockRejectedValue(new Error('smtp down'));
+
+        await expect(service.register(userDto)).rejects.toThrow();
+
+        expect(transactionHost.withTransaction).toHaveBeenCalledTimes(1);
+        await expect(
+          transactionHost.withTransaction.mock.results[0].value,
+        ).resolves.toBeDefined();
+        expect(usersRepository.create).toHaveBeenCalledWith(
+          expect.objectContaining({ status: 'pending' }),
+        );
+        expect(emailConfirmationRepository.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('rethrows database errors from the transaction unchanged', async () => {
+        const dbError = new Error('connection lost');
+        emailConfirmationRepository.create.mockRejectedValue(dbError);
+
+        await expect(service.register(userDto)).rejects.toBe(dbError);
         expect(mailerService.send).not.toHaveBeenCalled();
       });
 
