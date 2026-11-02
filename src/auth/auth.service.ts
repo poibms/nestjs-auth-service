@@ -1,8 +1,4 @@
-import {
-  ConflictException,
-  Injectable,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { RegisterDto } from './dto/register.dto.js';
 import bcrypt from 'bcrypt';
 import { UsersRepository, EmailAlreadyExistsError } from '#users/index.js';
@@ -13,45 +9,19 @@ import {
 } from '../generated/prisma/client.js';
 import { ConfigService } from '@nestjs/config';
 import { Env } from '../config/env.schema.js';
-import { ConfirmationSecretService } from './confirmation/confirmation-secret.service.js';
-import { EmailConfirmationAttemptsRepository } from './confirmation/email-confirmation-attempts.repository.js';
-import { randomUUID } from 'node:crypto';
-import {
-  CONFIRMATION_TTL_SECONDS,
-  RESEND_COOLDOWN_SECONDS,
-} from './confirmation/confirmation.constants.js';
 import { TransactionHost } from '@nestjs-cls/transactional';
-import { MailerService } from '../mailer/mailer.service.js';
-
-const CONFIRMATION_TTL_MINUTES = CONFIRMATION_TTL_SECONDS / 60;
+import { ConfirmationRequiredResponse } from './confirmation/confirmation.types.js';
+import { RegistrationConfirmationService } from './confirmation/registration-confirmation.service.js';
 
 export type RegisteredUserResponse = Pick<User, 'id' | 'email' | 'status'>;
-
-type MailContent = { subject: string; text: string };
-
-interface SecretStrategy {
-  generate(): string;
-  hash(attemptId: string, secret: string): string;
-  buildMail(secret: string): MailContent;
-}
-
-export type ConfirmationRequiredResponse = {
-  confirmationRequired: true;
-  method: ConfirmationMethod;
-  attemptId: string;
-  expiresInSeconds: number;
-  resendAfterSeconds: number;
-};
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly usersRepository: UsersRepository,
     private readonly configService: ConfigService<Env, true>,
-    private readonly confirmationSecretService: ConfirmationSecretService,
-    private readonly emailConfirmationAttemptsRepository: EmailConfirmationAttemptsRepository,
+    private readonly registrationConfirmationService: RegistrationConfirmationService,
     private readonly transactionHost: TransactionHost,
-    private readonly mailerService: MailerService,
   ) {}
 
   async register(
@@ -97,98 +67,18 @@ export class AuthService {
     passwordHash: string,
     method: ConfirmationMethod,
   ): Promise<ConfirmationRequiredResponse> {
-    const { attemptId, mail } = await this.transactionHost.withTransaction(
+    const { attemptId, secret } = await this.transactionHost.withTransaction(
       async () => {
         const user = await this.createUser(email, passwordHash, 'pending');
-        const { attemptId, secret } = await this.createConfirmationAttempt(
+        return this.registrationConfirmationService.createAttempt(
           user.id,
           method,
         );
-
-        return { attemptId, mail: this.strategies[method].buildMail(secret) };
       },
     );
-    try {
-      await this.mailerService.send({
-        to: email,
-        ...mail,
-      });
-    } catch (err) {
-      if (err instanceof Error) {
-        console.log('Failed to send confirmation email', err.message);
-      }
 
-      throw new ServiceUnavailableException(
-        'Confirmation email could not be sent',
-        { cause: err },
-      );
-    }
+    await this.registrationConfirmationService.sendEmail(email, method, secret);
 
-    return {
-      confirmationRequired: true,
-      method,
-      attemptId,
-      expiresInSeconds: CONFIRMATION_TTL_SECONDS,
-      resendAfterSeconds: RESEND_COOLDOWN_SECONDS,
-    };
-  }
-
-  private async createConfirmationAttempt(
-    userId: string,
-    method: ConfirmationMethod,
-  ): Promise<{ attemptId: string; secret: string }> {
-    const strategy = this.strategies[method];
-    const attemptId = randomUUID();
-    const secret = strategy.generate();
-    const now = Date.now();
-
-    await this.emailConfirmationAttemptsRepository.create({
-      id: attemptId,
-      secretHash: strategy.hash(attemptId, secret),
-      method,
-      userId,
-      expiresAt: new Date(now + CONFIRMATION_TTL_SECONDS * 1000),
-      sentAt: new Date(now),
-    });
-
-    return { attemptId, secret };
-  }
-
-  private readonly strategies: Record<ConfirmationMethod, SecretStrategy> = {
-    otp: {
-      generate: () => this.confirmationSecretService.generateOtp(),
-      hash: (attemptId, otp) =>
-        this.confirmationSecretService.hashOtp(attemptId, otp),
-      buildMail: (secret) => this.generateOtpMail(secret),
-    },
-    magic_link: {
-      generate: () => this.confirmationSecretService.generateToken(),
-      hash: (_attemptId, token) =>
-        this.confirmationSecretService.hashToken(token),
-      buildMail: (secret) => this.generateMagicLinkMail(secret),
-    },
-  };
-
-  private generateOtpMail(secret: string): MailContent {
-    return {
-      text: `Hello! Here is your code for confirm account: ${secret}. It expires in ${CONFIRMATION_TTL_MINUTES} minutes.`,
-      subject: 'Code for account verification',
-    };
-  }
-
-  private generateMagicLinkMail(secret: string): MailContent {
-    const confirmUrl = this.configService.get('REGISTRATION_CONFIRM_URL', {
-      infer: true,
-    });
-
-    if (!confirmUrl) throw new Error('REGISTRATION_CONFIRM_URL unset');
-
-    const url = new URL(confirmUrl);
-    url.searchParams.set('token', secret);
-
-    return {
-      text: `Hello, please visit ${url} to verify your account. The link expires in ${CONFIRMATION_TTL_MINUTES} minutes.`,
-      subject: 'Magic url for account verification',
-    };
+    return this.registrationConfirmationService.toResponse(method, attemptId);
   }
 }
