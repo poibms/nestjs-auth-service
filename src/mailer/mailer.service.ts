@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Env } from '../config/env.schema.js';
 import nodemailer, { type Transporter } from 'nodemailer';
+import { MailMessage } from './mail-message.js';
 
 @Injectable()
 export class MailerService {
@@ -13,14 +14,10 @@ export class MailerService {
     });
   }
 
-  async send(payload: {
-    to: string;
-    subject: string;
-    text: string;
-  }): Promise<void> {
+  async send(message: MailMessage): Promise<void> {
     await this.mailer.sendMail({
       from: this.configService.get('MAIL_FROM', { infer: true }),
-      ...payload,
+      ...message,
     });
   }
 }

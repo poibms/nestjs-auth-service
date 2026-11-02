@@ -1,3 +1,4 @@
+import { MailMessage } from '../../mailer/mail-message.js';
 import { ConfirmationMethod } from '../../generated/prisma/enums.js';
 
 export type ConfirmationRequiredResponse = {
@@ -8,4 +9,4 @@ export type ConfirmationRequiredResponse = {
   resendAfterSeconds: number;
 };
 
-export type MailContent = { subject: string; text: string };
+export type MailContent = Omit<MailMessage, 'to'>;

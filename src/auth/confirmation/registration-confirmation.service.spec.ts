@@ -126,6 +126,7 @@ describe('RegistrationConfirmationService', () => {
       expect(mailerService.send).toHaveBeenCalledWith({
         to: email,
         subject: expect.any(String),
+        html: expect.any(String),
         text: expect.stringContaining('123456'),
       });
     });
@@ -136,6 +137,7 @@ describe('RegistrationConfirmationService', () => {
       expect(mailerService.send).toHaveBeenCalledWith({
         to: email,
         subject: expect.any(String),
+        html: expect.any(String),
         text: expect.stringContaining(`${confirmUrl}?token=magic-link-token`),
       });
     });
