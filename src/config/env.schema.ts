@@ -10,6 +10,9 @@ export const envSchema = z
       .default('otp'),
     CONFIRMATION_HMAC_SECRET: z.string().min(32).optional(),
     REGISTRATION_CONFIRM_URL: z.url().optional(),
+    SMTP_HOST: z.string(),
+    SMTP_PORT: z.coerce.number().int().default(1025),
+    MAIL_FROM: z.email()
   })
   .superRefine((env, ctx) => {
     if (

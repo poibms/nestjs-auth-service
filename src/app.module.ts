@@ -11,6 +11,7 @@ import { ClsModule } from 'nestjs-cls';
 import { ClsPluginTransactional } from '@nestjs-cls/transactional';
 import { TransactionalAdapterPrisma } from '@nestjs-cls/transactional-adapter-prisma';
 import { PrismaService } from './prisma/prisma.service.js';
+import { MailerModule } from './mailer/mailer.module.js';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { PrismaService } from './prisma/prisma.service.js';
         }),
       ],
     }),
+    MailerModule,
   ],
   controllers: [AppController],
   providers: [

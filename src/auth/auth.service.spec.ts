@@ -5,24 +5,19 @@ import { AuthService } from './auth.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { Mock } from 'vitest';
 import bcrypt from 'bcrypt';
-import { ConflictException } from '@nestjs/common';
-import { EmailConfirmationAttemptsRepository } from './confirmation/email-confirmation-attempts.repository.js';
-import { ConfirmationSecretService } from './confirmation/confirmation-secret.service.js';
+import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { TransactionHost } from '@nestjs-cls/transactional';
+import { RegistrationConfirmationService } from './confirmation/registration-confirmation.service.js';
+import { ConfirmationRequiredResponse } from './confirmation/confirmation.types.js';
 
 describe('AuthService', () => {
   let service: AuthService;
   let usersRepository: { create: Mock<UsersRepository['create']> };
   let confirmationService: {
-    generateOtp: Mock<ConfirmationSecretService['generateOtp']>;
-    hashOtp: Mock<ConfirmationSecretService['hashOtp']>;
-    generateToken: Mock<ConfirmationSecretService['generateToken']>;
-    hashToken: Mock<ConfirmationSecretService['hashToken']>;
+    createAttempt: Mock<RegistrationConfirmationService['createAttempt']>;
+    sendEmail: Mock<RegistrationConfirmationService['sendEmail']>;
+    toResponse: Mock<RegistrationConfirmationService['toResponse']>;
   };
-  let emailConfirmationRepository: {
-    create: Mock<EmailConfirmationAttemptsRepository['create']>;
-  };
-
   let transactionHost: {
     withTransaction: Mock<(fn: () => Promise<unknown>) => Promise<unknown>>;
   };
@@ -33,27 +28,34 @@ describe('AuthService', () => {
     email: 'testemail@gmail.com',
     password: 'testPassword123',
   };
+  const userId = 'some-uuid';
 
   beforeEach(async () => {
     config = { BCRYPT_ROUNDS: 4 };
     usersRepository = { create: vi.fn() };
-    emailConfirmationRepository = { create: vi.fn() };
     confirmationService = {
-      generateOtp: vi.fn(),
-      hashOtp: vi.fn(),
-      generateToken: vi.fn(),
-      hashToken: vi.fn(),
+      createAttempt: vi.fn(),
+      sendEmail: vi.fn(),
+      toResponse: vi.fn(),
     };
     transactionHost = { withTransaction: vi.fn((fn) => fn()) };
+
+    usersRepository.create.mockImplementation(async (data) => ({
+      id: userId,
+      email: data.email,
+      passwordHash: data.passwordHash,
+      status: data.status,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }));
 
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
         { provide: UsersRepository, useValue: usersRepository },
-        { provide: ConfirmationSecretService, useValue: confirmationService },
         {
-          provide: EmailConfirmationAttemptsRepository,
-          useValue: emailConfirmationRepository,
+          provide: RegistrationConfirmationService,
+          useValue: confirmationService,
         },
         {
           provide: ConfigService,
@@ -67,18 +69,6 @@ describe('AuthService', () => {
   });
 
   describe('register', () => {
-    const userId = 'some-uuid';
-    beforeEach(() => {
-      usersRepository.create.mockResolvedValue({
-        id: userId,
-        email: userDto.email,
-        passwordHash: '$2b$04$hash-from-db',
-        status: 'active',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-    });
-
     it('passes email and active status to repository', async () => {
       await service.register(userDto);
       const invokeArgs = usersRepository.create.mock.calls[0][0];
@@ -111,202 +101,141 @@ describe('AuthService', () => {
       });
     });
 
-    it('does not open transaction or create attempt when confirmation is disabled', async () => {
+    it('does not open transaction or start confirmation when confirmation is disabled', async () => {
       await service.register(userDto);
       expect(transactionHost.withTransaction).not.toHaveBeenCalled();
-      expect(emailConfirmationRepository.create).not.toHaveBeenCalled();
+      expect(confirmationService.createAttempt).not.toHaveBeenCalled();
+      expect(confirmationService.sendEmail).not.toHaveBeenCalled();
     });
 
-    describe('with OTP confirmation enabled', () => {
-      const otp = '123456';
-      const secretHash = 'a'.repeat(64);
-      const now = new Date('2026-01-01T00:00:00.000Z');
-      let inTransaction: boolean;
-      let calledInTransaction: { user?: boolean; attempt?: boolean };
-
-      beforeEach(() => {
-        config.REGISTRATION_CONFIRMATION_ENABLED = true;
-        config.REGISTRATION_CONFIRMATION_METHOD = 'otp';
-        vi.useFakeTimers({ toFake: ['Date'] });
-        vi.setSystemTime(now);
-
-        inTransaction = false;
-        calledInTransaction = {};
-        transactionHost.withTransaction.mockImplementation(async (fn) => {
-          inTransaction = true;
-          try {
-            return await fn();
-          } finally {
-            inTransaction = false;
-          }
-        });
-        usersRepository.create.mockImplementation(async (data) => {
-          calledInTransaction.user = inTransaction;
-          return {
-            id: userId,
-            email: data.email,
-            passwordHash: data.passwordHash,
-            status: data.status,
-            createdAt: now,
-            updatedAt: now,
-          };
-        });
-        emailConfirmationRepository.create.mockImplementation(async () => {
-          calledInTransaction.attempt = inTransaction;
-        });
-        confirmationService.generateOtp.mockReturnValue(otp);
-        confirmationService.hashOtp.mockReturnValue(secretHash);
-      });
-
-      afterEach(() => {
-        vi.useRealTimers();
-      });
-
-      it('creates user with pending status', async () => {
-        await service.register(userDto);
-        expect(usersRepository.create).toHaveBeenCalledWith(
-          expect.objectContaining({ email: userDto.email, status: 'pending' }),
-        );
-      });
-
-      it('creates user and attempt inside one transaction', async () => {
-        await service.register(userDto);
-        expect(transactionHost.withTransaction).toHaveBeenCalledTimes(1);
-        expect(calledInTransaction).toEqual({ user: true, attempt: true });
-      });
-
-      it('stores HMAC of the code computed with the same attemptId', async () => {
-        await service.register(userDto);
-        const attempt = emailConfirmationRepository.create.mock.calls[0][0];
-        expect(confirmationService.hashOtp).toHaveBeenCalledWith(
-          attempt.id,
-          otp,
-        );
-        expect(attempt).toMatchObject({
-          userId,
-          method: 'otp',
-          secretHash,
-        });
-      });
-
-      it('sets sentAt to now and expiresAt to now + 10 minutes', async () => {
-        await service.register(userDto);
-        const attempt = emailConfirmationRepository.create.mock.calls[0][0];
-        expect(attempt.sentAt).toEqual(now);
-        expect(attempt.expiresAt).toEqual(new Date(now.getTime() + 600 * 1000));
-      });
-
-      it('returns confirmation info without the code or its hash', async () => {
-        const res = await service.register(userDto);
-        const attempt = emailConfirmationRepository.create.mock.calls[0][0];
-        expect(res).toEqual({
+    describe.each(['otp', 'magic_link'] as const)(
+      'with %s confirmation enabled',
+      (method) => {
+        const secret = 'plain-secret';
+        const attemptId = 'attempt-id';
+        const response: ConfirmationRequiredResponse = {
           confirmationRequired: true,
-          method: 'otp',
-          attemptId: attempt.id,
+          method,
+          attemptId,
           expiresInSeconds: 600,
           resendAfterSeconds: 60,
+        };
+        let inTransaction: boolean;
+        let calledInTransaction: {
+          user?: boolean;
+          attempt?: boolean;
+          email?: boolean;
+        };
+
+        beforeEach(() => {
+          config.REGISTRATION_CONFIRMATION_ENABLED = true;
+          config.REGISTRATION_CONFIRMATION_METHOD = method;
+
+          inTransaction = false;
+          calledInTransaction = {};
+          transactionHost.withTransaction.mockImplementation(async (fn) => {
+            inTransaction = true;
+            try {
+              return await fn();
+            } finally {
+              inTransaction = false;
+            }
+          });
+          const createUser = usersRepository.create.getMockImplementation()!;
+          usersRepository.create.mockImplementation(async (data) => {
+            calledInTransaction.user = inTransaction;
+            return createUser(data);
+          });
+          confirmationService.createAttempt.mockImplementation(async () => {
+            calledInTransaction.attempt = inTransaction;
+            return { attemptId, secret };
+          });
+          confirmationService.sendEmail.mockImplementation(async () => {
+            calledInTransaction.email = inTransaction;
+          });
+          confirmationService.toResponse.mockReturnValue(response);
         });
-      });
 
-      it('maps EmailAlreadyExistsError to ConflictException without creating attempt', async () => {
-        usersRepository.create.mockRejectedValue(new EmailAlreadyExistsError());
-
-        await expect(service.register(userDto)).rejects.toBeInstanceOf(
-          ConflictException,
-        );
-        expect(emailConfirmationRepository.create).not.toHaveBeenCalled();
-      });
-    });
-
-    describe('with magic link confirmation enabled', () => {
-      const token = 'magic-link-token';
-      const secretHash = 'b'.repeat(64);
-      const now = new Date('2026-01-01T00:00:00.000Z');
-      let inTransaction: boolean;
-      let calledInTransaction: { user?: boolean; attempt?: boolean };
-
-      beforeEach(() => {
-        config.REGISTRATION_CONFIRMATION_ENABLED = true;
-        config.REGISTRATION_CONFIRMATION_METHOD = 'magic_link';
-        vi.useFakeTimers({ toFake: ['Date'] });
-        vi.setSystemTime(now);
-
-        inTransaction = false;
-        calledInTransaction = {};
-        transactionHost.withTransaction.mockImplementation(async (fn) => {
-          inTransaction = true;
-          try {
-            return await fn();
-          } finally {
-            inTransaction = false;
-          }
+        it('creates pending user with bcrypt hash of the password', async () => {
+          await service.register(userDto);
+          const user = usersRepository.create.mock.calls[0][0];
+          expect(user).toMatchObject({
+            email: userDto.email,
+            status: 'pending',
+          });
+          expect(
+            await bcrypt.compare(userDto.password, user.passwordHash),
+          ).toBe(true);
         });
-        usersRepository.create.mockImplementation(async (data) => {
-          calledInTransaction.user = inTransaction;
-          return {
-            id: userId,
-            email: data.email,
-            passwordHash: data.passwordHash,
-            status: data.status,
-            createdAt: now,
-            updatedAt: now,
-          };
+
+        it('creates attempt for the new user with configured method', async () => {
+          await service.register(userDto);
+          expect(confirmationService.createAttempt).toHaveBeenCalledWith(
+            userId,
+            method,
+          );
         });
-        emailConfirmationRepository.create.mockImplementation(async () => {
-          calledInTransaction.attempt = inTransaction;
+
+        it('creates user and attempt inside one transaction, sends email after it', async () => {
+          await service.register(userDto);
+          expect(transactionHost.withTransaction).toHaveBeenCalledTimes(1);
+          expect(calledInTransaction).toEqual({
+            user: true,
+            attempt: true,
+            email: false,
+          });
         });
-        confirmationService.generateToken.mockReturnValue(token);
-        confirmationService.hashToken.mockReturnValue(secretHash);
-      });
 
-      afterEach(() => {
-        vi.useRealTimers();
-      });
-
-      it('creates pending user with bcrypt hash of the password', async () => {
-        await service.register(userDto);
-        const user = usersRepository.create.mock.calls[0][0];
-        expect(user).toMatchObject({ email: userDto.email, status: 'pending' });
-        expect(await bcrypt.compare(userDto.password, user.passwordHash)).toBe(
-          true,
-        );
-      });
-
-      it('creates user and attempt inside one transaction', async () => {
-        await service.register(userDto);
-        expect(transactionHost.withTransaction).toHaveBeenCalledTimes(1);
-        expect(calledInTransaction).toEqual({ user: true, attempt: true });
-      });
-
-      it('stores HMAC of the token with magic_link method', async () => {
-        await service.register(userDto);
-        expect(confirmationService.hashToken).toHaveBeenCalledWith(token);
-        expect(confirmationService.generateOtp).not.toHaveBeenCalled();
-        expect(confirmationService.hashOtp).not.toHaveBeenCalled();
-        expect(
-          emailConfirmationRepository.create.mock.calls[0][0],
-        ).toMatchObject({ userId, method: 'magic_link', secretHash });
-      });
-
-      it('sets sentAt to now and expiresAt to now + 10 minutes', async () => {
-        await service.register(userDto);
-        const attempt = emailConfirmationRepository.create.mock.calls[0][0];
-        expect(attempt.sentAt).toEqual(now);
-        expect(attempt.expiresAt).toEqual(new Date(now.getTime() + 600 * 1000));
-      });
-
-      it('returns confirmation info without the token or its hash', async () => {
-        const res = await service.register(userDto);
-        const attempt = emailConfirmationRepository.create.mock.calls[0][0];
-        expect(res).toEqual({
-          confirmationRequired: true,
-          method: 'magic_link',
-          attemptId: attempt.id,
-          expiresInSeconds: 600,
-          resendAfterSeconds: 60,
+        it('sends the secret to the user email', async () => {
+          await service.register(userDto);
+          expect(confirmationService.sendEmail).toHaveBeenCalledWith(
+            userDto.email,
+            method,
+            secret,
+          );
         });
-      });
-    });
+
+        it('returns confirmation info for the attempt', async () => {
+          const res = await service.register(userDto);
+          expect(confirmationService.toResponse).toHaveBeenCalledWith(
+            method,
+            attemptId,
+          );
+          expect(res).toBe(response);
+        });
+
+        it('keeps committed user and attempt when email sending fails', async () => {
+          const unavailable = new ServiceUnavailableException();
+          confirmationService.sendEmail.mockRejectedValue(unavailable);
+
+          await expect(service.register(userDto)).rejects.toBe(unavailable);
+          await expect(
+            transactionHost.withTransaction.mock.results[0].value,
+          ).resolves.toBeDefined();
+          expect(confirmationService.createAttempt).toHaveBeenCalledTimes(1);
+        });
+
+        it('maps EmailAlreadyExistsError to ConflictException without creating attempt', async () => {
+          usersRepository.create.mockRejectedValue(
+            new EmailAlreadyExistsError(),
+          );
+
+          await expect(service.register(userDto)).rejects.toBeInstanceOf(
+            ConflictException,
+          );
+          expect(confirmationService.createAttempt).not.toHaveBeenCalled();
+          expect(confirmationService.sendEmail).not.toHaveBeenCalled();
+        });
+
+        it('rethrows errors from the transaction unchanged without sending email', async () => {
+          const dbError = new Error('connection lost');
+          confirmationService.createAttempt.mockRejectedValue(dbError);
+
+          await expect(service.register(userDto)).rejects.toBe(dbError);
+          expect(confirmationService.sendEmail).not.toHaveBeenCalled();
+        });
+      },
+    );
 
     describe('errors', () => {
       it('maps EmailAlreadyExistsError to ConflictException', async () => {

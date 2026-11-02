@@ -9,37 +9,18 @@ import {
 } from '../generated/prisma/client.js';
 import { ConfigService } from '@nestjs/config';
 import { Env } from '../config/env.schema.js';
-import { ConfirmationSecretService } from './confirmation/confirmation-secret.service.js';
-import { EmailConfirmationAttemptsRepository } from './confirmation/email-confirmation-attempts.repository.js';
-import { randomUUID } from 'node:crypto';
-import {
-  CONFIRMATION_TTL_SECONDS,
-  RESEND_COOLDOWN_SECONDS,
-} from './confirmation/confirmation.constants.js';
 import { TransactionHost } from '@nestjs-cls/transactional';
+import { ConfirmationRequiredResponse } from './confirmation/confirmation.types.js';
+import { RegistrationConfirmationService } from './confirmation/registration-confirmation.service.js';
 
 export type RegisteredUserResponse = Pick<User, 'id' | 'email' | 'status'>;
-
-interface SecretStrategy {
-  generate(): string;
-  hash(attemptId: string, secret: string): string;
-}
-
-export type ConfirmationRequiredResponse = {
-  confirmationRequired: true;
-  method: ConfirmationMethod;
-  attemptId: string;
-  expiresInSeconds: number;
-  resendAfterSeconds: number;
-};
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly usersRepository: UsersRepository,
     private readonly configService: ConfigService<Env, true>,
-    private readonly confirmationSecretService: ConfirmationSecretService,
-    private readonly emailConfirmationAttemptsRepository: EmailConfirmationAttemptsRepository,
+    private readonly registrationConfirmationService: RegistrationConfirmationService,
     private readonly transactionHost: TransactionHost,
   ) {}
 
@@ -86,54 +67,18 @@ export class AuthService {
     passwordHash: string,
     method: ConfirmationMethod,
   ): Promise<ConfirmationRequiredResponse> {
-    const { attemptId } = await this.transactionHost.withTransaction(
+    const { attemptId, secret } = await this.transactionHost.withTransaction(
       async () => {
         const user = await this.createUser(email, passwordHash, 'pending');
-        return this.createConfirmationAttempt(user.id, method);
+        return this.registrationConfirmationService.createAttempt(
+          user.id,
+          method,
+        );
       },
     );
-    // TODO: send secret via Mailer (after commit)
 
-    return {
-      confirmationRequired: true,
-      method,
-      attemptId,
-      expiresInSeconds: CONFIRMATION_TTL_SECONDS,
-      resendAfterSeconds: RESEND_COOLDOWN_SECONDS,
-    };
+    await this.registrationConfirmationService.sendEmail(email, method, secret);
+
+    return this.registrationConfirmationService.toResponse(method, attemptId);
   }
-
-  private async createConfirmationAttempt(
-    userId: string,
-    method: ConfirmationMethod,
-  ): Promise<{ attemptId: string; secret: string }> {
-    const strategy = this.strategies[method];
-    const attemptId = randomUUID();
-    const secret = strategy.generate();
-    const now = Date.now();
-
-    await this.emailConfirmationAttemptsRepository.create({
-      id: attemptId,
-      secretHash: strategy.hash(attemptId, secret),
-      method,
-      userId,
-      expiresAt: new Date(now + CONFIRMATION_TTL_SECONDS * 1000),
-      sentAt: new Date(now),
-    });
-
-    return { attemptId, secret };
-  }
-
-  private readonly strategies: Record<ConfirmationMethod, SecretStrategy> = {
-    otp: {
-      generate: () => this.confirmationSecretService.generateOtp(),
-      hash: (attemptId, otp) =>
-        this.confirmationSecretService.hashOtp(attemptId, otp),
-    },
-    magic_link: {
-      generate: () => this.confirmationSecretService.generateToken(),
-      hash: (_attemptId, token) =>
-        this.confirmationSecretService.hashToken(token),
-    },
-  };
 }
