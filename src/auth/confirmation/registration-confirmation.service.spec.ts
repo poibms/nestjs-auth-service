@@ -142,15 +142,6 @@ describe('RegistrationConfirmationService', () => {
       });
     });
 
-    it('fails without sending when REGISTRATION_CONFIRM_URL is unset', async () => {
-      delete config.REGISTRATION_CONFIRM_URL;
-
-      await expect(
-        service.sendEmail(email, 'magic_link', 'magic-link-token'),
-      ).rejects.toThrow('REGISTRATION_CONFIRM_URL');
-      expect(mailerService.send).not.toHaveBeenCalled();
-    });
-
     it('throws ServiceUnavailableException with cause when mailer fails', async () => {
       const smtpError = new Error('connect ECONNREFUSED 127.0.0.1:1025');
       mailerService.send.mockRejectedValue(smtpError);

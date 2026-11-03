@@ -12,14 +12,10 @@ import {
 export class ConfirmationSecretService {
   constructor(private readonly configService: ConfigService<Env, true>) {}
 
-  private get secret() {
-    const secretString = this.configService.get('CONFIRMATION_HMAC_SECRET', {
+  private get secret(): string {
+    return this.configService.get('CONFIRMATION_HMAC_SECRET', {
       infer: true,
     });
-    if (!secretString)
-      throw new Error('CONFIRMATION_HMAC_SECRET is not configured');
-
-    return secretString;
   }
 
   generateOtp(): string {

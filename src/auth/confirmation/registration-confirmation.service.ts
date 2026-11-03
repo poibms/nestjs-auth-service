@@ -108,11 +108,8 @@ export class RegistrationConfirmationService {
   };
 
   private confirmUrl(): string {
-    const confirmUrl = this.configService.get('REGISTRATION_CONFIRM_URL', {
+    return this.configService.get('REGISTRATION_CONFIRM_URL', {
       infer: true,
     });
-    if (!confirmUrl) throw new Error('REGISTRATION_CONFIRM_URL unset');
-
-    return confirmUrl;
   }
 }
