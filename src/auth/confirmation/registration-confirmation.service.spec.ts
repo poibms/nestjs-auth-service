@@ -1,22 +1,47 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { TransactionHost } from '@nestjs-cls/transactional';
 import { Mock } from 'vitest';
 import { RegistrationConfirmationService } from './registration-confirmation.service.js';
 import { EmailConfirmationAttemptsRepository } from './email-confirmation-attempts.repository.js';
 import { ConfirmationSecretService } from './confirmation-secret.service.js';
 import { MailerService } from '../../mailer/mailer.service.js';
+import { UsersRepository } from '#users/users.repository.js';
+import {
+  EmailConfirmationAttempt,
+  User,
+} from '../../generated/prisma/client.js';
 
 describe('RegistrationConfirmationService', () => {
   let service: RegistrationConfirmationService;
   let attemptsRepository: {
     create: Mock<EmailConfirmationAttemptsRepository['create']>;
+    findOneById: Mock<EmailConfirmationAttemptsRepository['findOneById']>;
+    findOneBySecret: Mock<
+      EmailConfirmationAttemptsRepository['findOneBySecret']
+    >;
+    reserveOtpAttempt: Mock<
+      EmailConfirmationAttemptsRepository['reserveOtpAttempt']
+    >;
+    markConsumed: Mock<EmailConfirmationAttemptsRepository['markConsumed']>;
   };
+  let usersRepository: {
+    markEmailVerified: Mock<UsersRepository['markEmailVerified']>;
+  };
+  let transactionHost: { withTransaction: Mock };
+  let inTransaction: boolean;
   let secretService: {
     generateOtp: Mock<ConfirmationSecretService['generateOtp']>;
     hashOtp: Mock<ConfirmationSecretService['hashOtp']>;
     generateToken: Mock<ConfirmationSecretService['generateToken']>;
     hashToken: Mock<ConfirmationSecretService['hashToken']>;
+    verifyOtp: Mock<ConfirmationSecretService['verifyOtp']>;
   };
   let mailerService: { send: Mock<MailerService['send']> };
   let config: Record<string, unknown>;
@@ -28,12 +53,31 @@ describe('RegistrationConfirmationService', () => {
 
   beforeEach(async () => {
     config = { REGISTRATION_CONFIRM_URL: confirmUrl };
-    attemptsRepository = { create: vi.fn() };
+    attemptsRepository = {
+      create: vi.fn(),
+      findOneById: vi.fn(),
+      findOneBySecret: vi.fn(),
+      reserveOtpAttempt: vi.fn().mockResolvedValue(true),
+      markConsumed: vi.fn().mockResolvedValue(true),
+    };
+    usersRepository = { markEmailVerified: vi.fn() };
+    inTransaction = false;
+    transactionHost = {
+      withTransaction: vi.fn(async (fn: () => Promise<unknown>) => {
+        inTransaction = true;
+        try {
+          return await fn();
+        } finally {
+          inTransaction = false;
+        }
+      }),
+    };
     secretService = {
       generateOtp: vi.fn().mockReturnValue('123456'),
       hashOtp: vi.fn().mockReturnValue('a'.repeat(64)),
       generateToken: vi.fn().mockReturnValue('magic-link-token'),
       hashToken: vi.fn().mockReturnValue('b'.repeat(64)),
+      verifyOtp: vi.fn().mockReturnValue(true),
     };
     mailerService = { send: vi.fn() };
 
@@ -46,6 +90,8 @@ describe('RegistrationConfirmationService', () => {
         },
         { provide: ConfirmationSecretService, useValue: secretService },
         { provide: MailerService, useValue: mailerService },
+        { provide: UsersRepository, useValue: usersRepository },
+        { provide: TransactionHost, useValue: transactionHost },
         {
           provide: ConfigService,
           useValue: { get: (key: string) => config[key] },
@@ -163,6 +209,274 @@ describe('RegistrationConfirmationService', () => {
         attemptId: 'attempt-id',
         expiresInSeconds: 600,
         resendAfterSeconds: 60,
+      });
+    });
+  });
+
+  describe('confirm', () => {
+    const attemptId = '01a1a891-fdd9-717b-bc4b-cd50296069b5';
+    const code = '123456';
+    const token = 'm'.repeat(43);
+    const activeUser = {
+      id: userId,
+      email,
+      status: 'active',
+      passwordHash: 'hash',
+    } as User;
+
+    const makeAttempt = (
+      overrides: Partial<EmailConfirmationAttempt> = {},
+    ): EmailConfirmationAttempt => ({
+      id: attemptId,
+      userId,
+      method: 'otp',
+      attempts: 0,
+      secretHash: 'a'.repeat(64),
+      expiresAt: new Date(now.getTime() + 60_000),
+      sentAt: now,
+      consumedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      ...overrides,
+    });
+
+    const expectStatus = async (promise: Promise<unknown>, status: number) => {
+      const error = await promise.catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(HttpException);
+      expect((error as HttpException).getStatus()).toBe(status);
+    };
+
+    beforeEach(() => {
+      usersRepository.markEmailVerified.mockResolvedValue(activeUser);
+    });
+
+    describe('confirmOtp', () => {
+      const confirm = () => service.confirmOtp({ attemptId, code }, now);
+
+      beforeEach(() => {
+        attemptsRepository.findOneById.mockResolvedValue(makeAttempt());
+      });
+
+      it('returns activated user without sensitive fields', async () => {
+        await expect(confirm()).resolves.toEqual({
+          id: userId,
+          email,
+          status: 'active',
+        });
+      });
+
+      it('reserves the attempt before comparing the code', async () => {
+        await confirm();
+
+        expect(attemptsRepository.reserveOtpAttempt).toHaveBeenCalledWith(
+          attemptId,
+          5,
+          now,
+        );
+        expect(
+          attemptsRepository.reserveOtpAttempt.mock.invocationCallOrder[0],
+        ).toBeLessThan(secretService.verifyOtp.mock.invocationCallOrder[0]);
+        expect(secretService.verifyOtp).toHaveBeenCalledWith(
+          attemptId,
+          code,
+          'a'.repeat(64),
+        );
+      });
+
+      it('reserves the attempt outside the activation transaction', async () => {
+        let reservedInTransaction: boolean | undefined;
+        attemptsRepository.reserveOtpAttempt.mockImplementation(() => {
+          reservedInTransaction = inTransaction;
+          return Promise.resolve(true);
+        });
+
+        await confirm();
+
+        expect(reservedInTransaction).toBe(false);
+      });
+
+      it('consumes the attempt and activates the user in one transaction', async () => {
+        const calledInTransaction: boolean[] = [];
+        attemptsRepository.markConsumed.mockImplementation(() => {
+          calledInTransaction.push(inTransaction);
+          return Promise.resolve(true);
+        });
+        usersRepository.markEmailVerified.mockImplementation(() => {
+          calledInTransaction.push(inTransaction);
+          return Promise.resolve(activeUser);
+        });
+
+        await confirm();
+
+        expect(attemptsRepository.markConsumed).toHaveBeenCalledWith(
+          attemptId,
+          now,
+        );
+        expect(usersRepository.markEmailVerified).toHaveBeenCalledWith(userId);
+        expect(calledInTransaction).toEqual([true, true]);
+      });
+
+      it.each([
+        ['not found', null],
+        ['issued for magic_link', makeAttempt({ method: 'magic_link' })],
+        ['already consumed', makeAttempt({ consumedAt: now })],
+        [
+          'consumed on the last allowed attempt',
+          makeAttempt({ consumedAt: now, attempts: 5 }),
+        ],
+        ['expired', makeAttempt({ expiresAt: new Date(now.getTime() - 1) })],
+        ['expiring exactly now', makeAttempt({ expiresAt: now })],
+      ])(
+        'rejects with 400 without spending an attempt when %s',
+        async (_case, attempt) => {
+          attemptsRepository.findOneById.mockResolvedValue(attempt);
+
+          await expect(confirm()).rejects.toThrow(BadRequestException);
+          expect(attemptsRepository.reserveOtpAttempt).not.toHaveBeenCalled();
+          expect(secretService.verifyOtp).not.toHaveBeenCalled();
+        },
+      );
+
+      it('rejects with 429 when attempts are exhausted, even for a correct code', async () => {
+        attemptsRepository.findOneById.mockResolvedValue(
+          makeAttempt({ attempts: 5 }),
+        );
+
+        await expectStatus(confirm(), HttpStatus.TOO_MANY_REQUESTS);
+        expect(attemptsRepository.reserveOtpAttempt).not.toHaveBeenCalled();
+        expect(secretService.verifyOtp).not.toHaveBeenCalled();
+      });
+
+      it('rejects with 429 when attempts are exhausted and the attempt is expired', async () => {
+        attemptsRepository.findOneById.mockResolvedValue(
+          makeAttempt({ attempts: 5, expiresAt: new Date(now.getTime() - 1) }),
+        );
+
+        await expectStatus(confirm(), HttpStatus.TOO_MANY_REQUESTS);
+      });
+
+      it('allows the 5th attempt', async () => {
+        attemptsRepository.findOneById.mockResolvedValue(
+          makeAttempt({ attempts: 4 }),
+        );
+
+        await expect(confirm()).resolves.toMatchObject({ status: 'active' });
+      });
+
+      it('rejects a wrong code with 400 after spending the attempt', async () => {
+        secretService.verifyOtp.mockReturnValue(false);
+
+        await expect(confirm()).rejects.toThrow(BadRequestException);
+        expect(attemptsRepository.reserveOtpAttempt).toHaveBeenCalled();
+        expect(attemptsRepository.markConsumed).not.toHaveBeenCalled();
+        expect(usersRepository.markEmailVerified).not.toHaveBeenCalled();
+      });
+
+      describe('when a concurrent request wins the reservation', () => {
+        beforeEach(() => {
+          attemptsRepository.reserveOtpAttempt.mockResolvedValue(false);
+        });
+
+        it('rejects with 429 if the limit got exhausted', async () => {
+          attemptsRepository.findOneById
+            .mockResolvedValueOnce(makeAttempt({ attempts: 4 }))
+            .mockResolvedValueOnce(makeAttempt({ attempts: 5 }));
+
+          await expectStatus(confirm(), HttpStatus.TOO_MANY_REQUESTS);
+          expect(secretService.verifyOtp).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ['consumed', makeAttempt({ consumedAt: now })],
+          [
+            'consumed on the last attempt',
+            makeAttempt({ attempts: 5, consumedAt: now }),
+          ],
+          ['gone', null],
+        ])('rejects with 400 if the attempt got %s', async (_case, current) => {
+          attemptsRepository.findOneById
+            .mockResolvedValueOnce(makeAttempt())
+            .mockResolvedValueOnce(current);
+
+          await expect(confirm()).rejects.toThrow(BadRequestException);
+          expect(secretService.verifyOtp).not.toHaveBeenCalled();
+        });
+      });
+
+      it('rejects with 400 if the attempt was consumed concurrently', async () => {
+        attemptsRepository.markConsumed.mockResolvedValue(false);
+
+        await expect(confirm()).rejects.toThrow(BadRequestException);
+        expect(usersRepository.markEmailVerified).not.toHaveBeenCalled();
+      });
+
+      it('rejects with 400 if the user is no longer pending', async () => {
+        usersRepository.markEmailVerified.mockResolvedValue(false);
+
+        await expect(confirm()).rejects.toThrow(BadRequestException);
+      });
+    });
+
+    describe('confirmMagicLink', () => {
+      const confirm = () => service.confirmMagicLink({ token }, now);
+
+      beforeEach(() => {
+        attemptsRepository.findOneBySecret.mockResolvedValue(
+          makeAttempt({ method: 'magic_link', secretHash: 'b'.repeat(64) }),
+        );
+      });
+
+      it('finds the attempt by token hash and activates the user', async () => {
+        await expect(confirm()).resolves.toEqual({
+          id: userId,
+          email,
+          status: 'active',
+        });
+        expect(secretService.hashToken).toHaveBeenCalledWith(token);
+        expect(attemptsRepository.findOneBySecret).toHaveBeenCalledWith(
+          'b'.repeat(64),
+        );
+        expect(attemptsRepository.markConsumed).toHaveBeenCalledWith(
+          attemptId,
+          now,
+        );
+        expect(usersRepository.markEmailVerified).toHaveBeenCalledWith(userId);
+      });
+
+      it('does not count attempts', async () => {
+        await confirm();
+
+        expect(attemptsRepository.reserveOtpAttempt).not.toHaveBeenCalled();
+        expect(secretService.verifyOtp).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['not found', null],
+        ['issued for otp', makeAttempt({ method: 'otp' })],
+        [
+          'already consumed',
+          makeAttempt({ method: 'magic_link', consumedAt: now }),
+        ],
+        [
+          'expired',
+          makeAttempt({
+            method: 'magic_link',
+            expiresAt: new Date(now.getTime() - 1),
+          }),
+        ],
+      ])('rejects with 400 when %s', async (_case, attempt) => {
+        attemptsRepository.findOneBySecret.mockResolvedValue(attempt);
+
+        await expect(confirm()).rejects.toThrow(BadRequestException);
+        expect(attemptsRepository.markConsumed).not.toHaveBeenCalled();
+        expect(usersRepository.markEmailVerified).not.toHaveBeenCalled();
+      });
+
+      it('rejects with 400 on a concurrent second click', async () => {
+        attemptsRepository.markConsumed.mockResolvedValue(false);
+
+        await expect(confirm()).rejects.toThrow(BadRequestException);
+        expect(usersRepository.markEmailVerified).not.toHaveBeenCalled();
       });
     });
   });

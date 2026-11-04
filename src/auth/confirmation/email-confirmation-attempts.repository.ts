@@ -29,6 +29,12 @@ export class EmailConfirmationAttemptsRepository {
     });
   }
 
+  async findOneBySecretHash(hashedToken: string) {
+    return await this.transactionHost.tx.emailConfirmationAttempt.findUnique({
+      where: { secretHash: hashedToken },
+    });
+  }
+
   async reserveOtpAttempt(
     attemptId: string,
     maxAttemptsCount: number,

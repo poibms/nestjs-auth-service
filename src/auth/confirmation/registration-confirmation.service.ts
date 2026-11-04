@@ -27,7 +27,10 @@ import {
   generateMagicLinkMail,
   generateOtpMail,
 } from './confirmation-mail.builder.js';
-import { OtpConfirm } from '../dto/confirm-registration.dto.js';
+import {
+  MagicLinkConfirm,
+  OtpConfirm,
+} from '../dto/confirm-registration.dto.js';
 import { UsersRepository } from '#users/users.repository.js';
 import { TransactionHost } from '@nestjs-cls/transactional';
 
@@ -86,6 +89,19 @@ export class RegistrationConfirmationService {
     ) {
       this.throwBadRequest();
     }
+
+    return this.activate(attempt.id, attempt.userId, now);
+  }
+
+  async confirmMagicLink({ token }: MagicLinkConfirm, now: Date) {
+    const hashedToken = this.confirmationSecretService.hashToken(token);
+    const attempt =
+      await this.emailConfirmationAttemptsRepository.findOneBySecretHash(
+        hashedToken,
+      );
+
+    if (attempt && this.isExhausted(attempt)) this.throwTooManyRequestsError();
+    this.assertPending(attempt, 'magic_link', now);
 
     return this.activate(attempt.id, attempt.userId, now);
   }

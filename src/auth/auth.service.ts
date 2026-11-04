@@ -89,15 +89,17 @@ export class AuthService {
   }
 
   async confirm(payload: ConfirmDto) {
+    const now = new Date();
     if ('attemptId' in payload) {
-      const now = new Date();
-
       return await this.registrationConfirmationService.confirmOtp(
         payload,
         now,
       );
     } else {
-      throw new NotImplementedException();
+      return await this.registrationConfirmationService.confirmMagicLink(
+        payload,
+        now,
+      );
     }
   }
 }
