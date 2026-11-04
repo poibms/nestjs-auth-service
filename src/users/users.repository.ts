@@ -29,4 +29,21 @@ export class UsersRepository {
       throw error;
     }
   }
+
+  async markEmailVerified(userId: string) {
+    try {
+      const data = await this.transactionHost.tx.user.update({
+        where: { id: userId, status: 'pending' },
+        data: { status: 'active' },
+      });
+      return data;
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2025'
+      )
+        return false;
+      throw e;
+    }
+  }
 }

@@ -1,4 +1,8 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotImplementedException,
+} from '@nestjs/common';
 import { RegisterDto } from './dto/register.dto.js';
 import bcrypt from 'bcrypt';
 import { UsersRepository, EmailAlreadyExistsError } from '#users/index.js';
@@ -10,10 +14,12 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Env } from '../config/env.schema.js';
 import { TransactionHost } from '@nestjs-cls/transactional';
-import { ConfirmationRequiredResponse } from './confirmation/confirmation.types.js';
+import {
+  ConfirmationRequiredResponse,
+  RegisteredUserResponse,
+} from './confirmation/confirmation.types.js';
 import { RegistrationConfirmationService } from './confirmation/registration-confirmation.service.js';
-
-export type RegisteredUserResponse = Pick<User, 'id' | 'email' | 'status'>;
+import { ConfirmDto } from './dto/confirm-registration.dto.js';
 
 @Injectable()
 export class AuthService {
@@ -80,5 +86,20 @@ export class AuthService {
     await this.registrationConfirmationService.sendEmail(email, method, secret);
 
     return this.registrationConfirmationService.toResponse(method, attemptId);
+  }
+
+  async confirm(payload: ConfirmDto) {
+    const now = new Date();
+    if ('attemptId' in payload) {
+      return await this.registrationConfirmationService.confirmOtp(
+        payload,
+        now,
+      );
+    } else {
+      return await this.registrationConfirmationService.confirmMagicLink(
+        payload,
+        now,
+      );
+    }
   }
 }

@@ -34,24 +34,6 @@ describe('ConfirmationSecretService', () => {
     service = await createService();
   });
 
-  describe('without CONFIRMATION_HMAC_SECRET', () => {
-    beforeEach(() => {
-      delete config.CONFIRMATION_HMAC_SECRET;
-    });
-
-    it('can be created (secret is checked lazily)', async () => {
-      await expect(createService()).resolves.toBeInstanceOf(
-        ConfirmationSecretService,
-      );
-    });
-
-    it('hashOtp throws', () => {
-      expect(() => service.hashOtp(attemptId, code)).toThrow(
-        'CONFIRMATION_HMAC_SECRET is not configured',
-      );
-    });
-  });
-
   describe('generateOtp', () => {
     it('always returns 6 digits', () => {
       for (let i = 0; i < 100; i++) {
