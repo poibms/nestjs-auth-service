@@ -22,4 +22,39 @@ export class EmailConfirmationAttemptsRepository {
   }) {
     await this.transactionHost.tx.emailConfirmationAttempt.create({ data });
   }
+
+  async findOneById(id: string) {
+    return await this.transactionHost.tx.emailConfirmationAttempt.findUnique({
+      where: { id },
+    });
+  }
+
+  async reserveOtpAttempt(
+    attemptId: string,
+    maxAttemptsCount: number,
+    now: Date,
+  ): Promise<boolean> {
+    const { count } =
+      await this.transactionHost.tx.emailConfirmationAttempt.updateMany({
+        where: {
+          id: attemptId,
+          attempts: { lt: maxAttemptsCount },
+          expiresAt: { gt: now },
+          consumedAt: null,
+        },
+        data: { attempts: { increment: 1 } },
+      });
+
+    return count === 1;
+  }
+
+  async markConsumed(id: string, consumedAt: Date): Promise<boolean> {
+    const { count } =
+      await this.transactionHost.tx.emailConfirmationAttempt.updateMany({
+        where: { id, consumedAt: null },
+        data: { consumedAt },
+      });
+
+    return count === 1;
+  }
 }

@@ -1,7 +1,20 @@
-import { Body, Controller, HttpStatus, Post, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Res,
+  UsePipes,
+} from '@nestjs/common';
 import { RegisterDto } from './dto/register.dto.js';
 import { AuthService } from './auth.service.js';
 import type { Response } from 'express';
+import {
+  confirmEmailSchema,
+  type ConfirmDto,
+} from './dto/confirm-registration.dto.js';
+import { ZodValidationPipe } from '#common/pipes/zod-validation.pipe.js';
 
 @Controller('auth')
 export class AuthController {
@@ -18,5 +31,12 @@ export class AuthController {
     }
 
     return result;
+  }
+
+  @Post('register/confirm')
+  @HttpCode(200)
+  @UsePipes(new ZodValidationPipe(confirmEmailSchema))
+  async confirm(@Body() dto: ConfirmDto) {
+    return this.authService.confirm(dto);
   }
 }

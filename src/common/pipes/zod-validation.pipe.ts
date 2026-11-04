@@ -18,8 +18,10 @@ function getZodSchema(metatype: unknown): ZodType | undefined {
 }
 
 export class ZodValidationPipe implements PipeTransform {
+  constructor(private schema?: ZodType) {}
+
   transform(value: unknown, metadata: ArgumentMetadata) {
-    const schema = getZodSchema(metadata.metatype);
+    const schema = this.schema ?? getZodSchema(metadata.metatype);
     if (!schema) {
       return value;
     }

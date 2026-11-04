@@ -1,2 +1,4 @@
 export const CONFIRMATION_TTL_SECONDS = 600;
 export const RESEND_COOLDOWN_SECONDS = 60;
+
+export const MAX_OTP_ATTEMPTS_COUNT = 5;
