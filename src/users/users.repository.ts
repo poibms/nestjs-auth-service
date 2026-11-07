@@ -30,6 +30,10 @@ export class UsersRepository {
     }
   }
 
+  async getUserByEmail(email: string) {
+    return this.transactionHost.tx.user.findUnique({ where: { email } });
+  }
+
   async markEmailVerified(userId: string) {
     try {
       const data = await this.transactionHost.tx.user.update({

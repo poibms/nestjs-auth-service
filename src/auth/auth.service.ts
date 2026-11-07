@@ -1,7 +1,7 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
-  NotImplementedException,
 } from '@nestjs/common';
 import { RegisterDto } from './dto/register.dto.js';
 import bcrypt from 'bcrypt';
@@ -20,6 +20,7 @@ import {
 } from './confirmation/confirmation.types.js';
 import { RegistrationConfirmationService } from './confirmation/registration-confirmation.service.js';
 import { ConfirmDto } from './dto/confirm-registration.dto.js';
+import { ResendType } from './dto/resend.dto.js';
 
 @Injectable()
 export class AuthService {
@@ -101,5 +102,24 @@ export class AuthService {
         now,
       );
     }
+  }
+
+  async resend(resendDto: ResendType) {
+    const user = await this.usersRepository.getUserByEmail(resendDto.email);
+    if (user?.status !== 'pending')
+      throw new BadRequestException(
+        'Invalid email or account already confirmed',
+      );
+
+    const { attemptId, method, secret } =
+      await this.registrationConfirmationService.reissueAttempt(user.id);
+
+    await this.registrationConfirmationService.sendEmail(
+      user.email,
+      method,
+      secret,
+    );
+
+    return this.registrationConfirmationService.toResponse(method, attemptId);
   }
 }

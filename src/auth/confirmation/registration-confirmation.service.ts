@@ -106,6 +106,40 @@ export class RegistrationConfirmationService {
     return this.activate(attempt.id, attempt.userId, now);
   }
 
+  async reissueAttempt(
+    userId: string,
+  ): Promise<{
+    attemptId: string;
+    method: ConfirmationMethod;
+    secret: string;
+  }> {
+    const attempt =
+      await this.emailConfirmationAttemptsRepository.findOneByUserId(userId);
+
+    if (!attempt || attempt.consumedAt) this.throwBadRequest();
+
+    const now = Date.now();
+
+    if (attempt.method === 'otp') {
+      const otp = this.confirmationSecretService.generateOtp();
+      const hashedOtp = this.confirmationSecretService.hashOtp(attempt.id, otp);
+      const isAttemptUpdated =
+        await this.emailConfirmationAttemptsRepository.replaceSecret({
+          expiresAt: new Date(now + CONFIRMATION_TTL_SECONDS * 1000),
+          id: attempt.id,
+          secretHash: hashedOtp,
+          now: new Date(now),
+          sentBefore: new Date(now - RESEND_COOLDOWN_SECONDS * 1000),
+        });
+
+      if (!isAttemptUpdated) this.throwTooManyRequestsError();
+
+      return { attemptId: attempt.id, method: 'otp', secret: otp };
+    }
+
+    return this.throwBadRequest();
+  }
+
   async sendEmail(
     email: string,
     method: ConfirmationMethod,
