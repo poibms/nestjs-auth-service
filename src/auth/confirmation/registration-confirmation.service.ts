@@ -19,6 +19,7 @@ import {
   RESEND_COOLDOWN_SECONDS,
 } from './confirmation.constants.js';
 import {
+  ConfirmationFailureReason,
   ConfirmationRequiredResponse,
   MailContent,
   RegisteredUserResponse,
@@ -79,7 +80,8 @@ export class RegistrationConfirmationService {
   async confirmOtp({ attemptId, code }: OtpConfirm, now: Date) {
     const attempt =
       await this.emailConfirmationAttemptsRepository.findOneById(attemptId);
-    if (attempt && this.isExhausted(attempt)) this.throwTooManyRequestsError();
+    if (attempt && this.isExhausted(attempt))
+      this.throwTooManyRequestsError('exhausted', attemptId);
     this.assertPending(attempt, 'otp', now);
 
     await this.reserveOtpAttempt(attempt.id, now);
@@ -91,7 +93,7 @@ export class RegistrationConfirmationService {
         attempt.secretHash,
       )
     ) {
-      this.throwBadRequest();
+      this.throwBadRequest('wrong_code', attempt.id);
     }
 
     return this.activate(attempt.id, attempt.userId, now);
@@ -117,7 +119,12 @@ export class RegistrationConfirmationService {
     const attempt =
       await this.emailConfirmationAttemptsRepository.findOneByUserId(userId);
 
-    if (!attempt || attempt.consumedAt) this.throwBadRequest();
+    if (!attempt) {
+      this.throwBadRequest('not_found');
+    }
+    if (attempt.consumedAt) {
+      this.throwBadRequest('consumed', attempt.id);
+    }
 
     const now = Date.now();
 
@@ -133,7 +140,8 @@ export class RegistrationConfirmationService {
         sentBefore: new Date(now - RESEND_COOLDOWN_SECONDS * 1000),
       });
 
-    if (!isAttemptUpdated) this.throwTooManyRequestsError();
+    if (!isAttemptUpdated)
+      this.throwTooManyRequestsError('resend_cooldown', attempt.id);
 
     return { attemptId: attempt.id, method: attempt.method, secret };
   }
@@ -204,13 +212,20 @@ export class RegistrationConfirmationService {
     method: ConfirmationMethod,
     now: Date,
   ): asserts attempt is EmailConfirmationAttempt {
-    if (
-      !attempt ||
-      attempt.method !== method ||
-      attempt.consumedAt ||
-      attempt.expiresAt <= now
-    ) {
-      this.throwBadRequest();
+    if (!attempt) {
+      this.throwBadRequest('not_found');
+    }
+
+    if (attempt.method !== method) {
+      this.throwBadRequest('method_mismatch', attempt.id);
+    }
+
+    if (attempt.consumedAt) {
+      this.throwBadRequest('consumed', attempt.id);
+    }
+
+    if (attempt.expiresAt <= now) {
+      this.throwBadRequest('expired', attempt.id);
     }
   }
 
@@ -229,8 +244,10 @@ export class RegistrationConfirmationService {
 
     const current =
       await this.emailConfirmationAttemptsRepository.findOneById(attemptId);
-    if (current && this.isExhausted(current)) this.throwTooManyRequestsError();
-    this.throwBadRequest();
+    if (current && this.isExhausted(current))
+      this.throwTooManyRequestsError('exhausted', attemptId);
+    this.assertPending(current, 'otp', now);
+    this.throwBadRequest('expired', attemptId);
   }
 
   private activate(
@@ -244,20 +261,32 @@ export class RegistrationConfirmationService {
           attemptId,
           now,
         );
-      if (!isConsumed) this.throwBadRequest();
+      if (!isConsumed) this.throwBadRequest('consumed', attemptId);
 
       const user = await this.usersRepository.markEmailVerified(userId);
-      if (!user) this.throwBadRequest();
+      if (!user) this.throwBadRequest('not_found', attemptId);
 
       return { id: user.id, email: user.email, status: user.status };
     });
   }
 
-  private throwBadRequest(): never {
+  private throwBadRequest(
+    reason: ConfirmationFailureReason,
+    attemptId?: string,
+  ): never {
+    this.logger.warn({ event: 'confirmation.failed', reason, attemptId });
     throw new BadRequestException('Invalid or expired confirmation code');
   }
 
-  private throwTooManyRequestsError(): never {
+  private throwTooManyRequestsError(
+    reason: ConfirmationFailureReason,
+    attemptId?: string,
+  ): never {
+    this.logger.warn({
+      event: 'confirmation.failed',
+      reason,
+      attemptId,
+    });
     throw new HttpException(
       {
         statusCode: HttpStatus.TOO_MANY_REQUESTS,

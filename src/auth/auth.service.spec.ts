@@ -5,14 +5,23 @@ import { AuthService } from './auth.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { Mock } from 'vitest';
 import bcrypt from 'bcrypt';
-import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { TransactionHost } from '@nestjs-cls/transactional';
 import { RegistrationConfirmationService } from './confirmation/registration-confirmation.service.js';
 import { ConfirmationRequiredResponse } from './confirmation/confirmation.types.js';
+import { User } from '../generated/prisma/client.js';
 
 describe('AuthService', () => {
   let service: AuthService;
-  let usersRepository: { create: Mock<UsersRepository['create']> };
+  let usersRepository: {
+    create: Mock<UsersRepository['create']>;
+    getUserByEmail: Mock<UsersRepository['getUserByEmail']>;
+  };
   let confirmationService: {
     createAttempt: Mock<RegistrationConfirmationService['createAttempt']>;
     sendEmail: Mock<RegistrationConfirmationService['sendEmail']>;
@@ -32,7 +41,7 @@ describe('AuthService', () => {
 
   beforeEach(async () => {
     config = { BCRYPT_ROUNDS: 4 };
-    usersRepository = { create: vi.fn() };
+    usersRepository = { create: vi.fn(), getUserByEmail: vi.fn() };
     confirmationService = {
       createAttempt: vi.fn(),
       sendEmail: vi.fn(),
@@ -66,6 +75,36 @@ describe('AuthService', () => {
     }).compile();
 
     service = moduleRef.get(AuthService);
+  });
+
+  describe('resend', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it.each([
+      ['not_found', null, undefined],
+      ['not_pending', { id: userId, status: 'active' } as User, userId],
+    ])(
+      'rejects with 400 and logs %s without the email',
+      async (reason, user, loggedUserId) => {
+        const warnSpy = vi
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => {});
+        usersRepository.getUserByEmail.mockResolvedValue(user);
+
+        await expect(service.resend({ email: userDto.email })).rejects.toThrow(
+          BadRequestException,
+        );
+
+        expect(warnSpy).toHaveBeenCalledWith({
+          event: 'resend.failed',
+          reason,
+          userId: loggedUserId,
+        });
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(userDto.email);
+      },
+    );
   });
 
   describe('register', () => {

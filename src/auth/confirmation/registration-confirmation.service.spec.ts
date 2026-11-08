@@ -31,6 +31,10 @@ describe('RegistrationConfirmationService', () => {
       EmailConfirmationAttemptsRepository['reserveOtpAttempt']
     >;
     markConsumed: Mock<EmailConfirmationAttemptsRepository['markConsumed']>;
+    findOneByUserId: Mock<
+      EmailConfirmationAttemptsRepository['findOneByUserId']
+    >;
+    replaceSecret: Mock<EmailConfirmationAttemptsRepository['replaceSecret']>;
   };
   let usersRepository: {
     markEmailVerified: Mock<UsersRepository['markEmailVerified']>;
@@ -60,6 +64,8 @@ describe('RegistrationConfirmationService', () => {
       findOneBySecretHash: vi.fn(),
       reserveOtpAttempt: vi.fn().mockResolvedValue(true),
       markConsumed: vi.fn().mockResolvedValue(true),
+      findOneByUserId: vi.fn(),
+      replaceSecret: vi.fn().mockResolvedValue(true),
     };
     usersRepository = { markEmailVerified: vi.fn() };
     inTransaction = false;
@@ -492,6 +498,13 @@ describe('RegistrationConfirmationService', () => {
           await expect(confirm()).rejects.toThrow(BadRequestException);
           expect(secretService.verifyOtp).not.toHaveBeenCalled();
         });
+
+        it('rejects with 400 without checking the code if the attempt still looks pending', async () => {
+          await expect(confirm()).rejects.toThrow(BadRequestException);
+          expect(secretService.verifyOtp).not.toHaveBeenCalled();
+          expect(attemptsRepository.markConsumed).not.toHaveBeenCalled();
+          expect(usersRepository.markEmailVerified).not.toHaveBeenCalled();
+        });
       });
 
       it('rejects with 400 if the attempt was consumed concurrently', async () => {
@@ -568,6 +581,108 @@ describe('RegistrationConfirmationService', () => {
 
         await expect(confirm()).rejects.toThrow(BadRequestException);
         expect(usersRepository.markEmailVerified).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('failure logging', () => {
+      const confirm = () => service.confirmOtp({ attemptId, code }, now);
+      let warnSpy: MockInstance<Logger['warn']>;
+
+      const expectLogged = (reason: string, loggedId?: string) => {
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        expect(warnSpy).toHaveBeenCalledWith({
+          event: 'confirmation.failed',
+          reason,
+          attemptId: loggedId,
+        });
+      };
+
+      beforeEach(() => {
+        warnSpy = vi
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => {});
+        attemptsRepository.findOneById.mockResolvedValue(makeAttempt());
+      });
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it.each([
+        ['not_found', null, undefined],
+        ['method_mismatch', makeAttempt({ method: 'magic_link' }), attemptId],
+        ['consumed', makeAttempt({ consumedAt: now }), attemptId],
+        ['expired', makeAttempt({ expiresAt: now }), attemptId],
+        ['exhausted', makeAttempt({ attempts: 5 }), attemptId],
+      ])(
+        'logs %s for a rejected attempt',
+        async (reason, attempt, loggedId) => {
+          attemptsRepository.findOneById.mockResolvedValue(attempt);
+
+          await confirm().catch(() => undefined);
+
+          expectLogged(reason, loggedId);
+        },
+      );
+
+      it('logs wrong_code without the submitted code', async () => {
+        secretService.verifyOtp.mockReturnValue(false);
+
+        await confirm().catch(() => undefined);
+
+        expectLogged('wrong_code', attemptId);
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(code);
+      });
+
+      it('logs expired when the reservation fails but the attempt still looks pending', async () => {
+        attemptsRepository.reserveOtpAttempt.mockResolvedValue(false);
+
+        await confirm().catch(() => undefined);
+
+        expectLogged('expired', attemptId);
+      });
+
+      it('logs consumed with attemptId when activation loses the race', async () => {
+        attemptsRepository.markConsumed.mockResolvedValue(false);
+
+        await confirm().catch(() => undefined);
+
+        expectLogged('consumed', attemptId);
+      });
+
+      it('logs not_found with attemptId when the user cannot be activated', async () => {
+        usersRepository.markEmailVerified.mockResolvedValue(false);
+
+        await confirm().catch(() => undefined);
+
+        expectLogged('not_found', attemptId);
+      });
+
+      describe('reissueAttempt', () => {
+        it.each([
+          ['not_found', null, undefined],
+          ['consumed', makeAttempt({ consumedAt: now }), attemptId],
+        ])('logs %s', async (reason, attempt, loggedId) => {
+          attemptsRepository.findOneByUserId.mockResolvedValue(attempt);
+
+          await expect(service.reissueAttempt(userId)).rejects.toThrow(
+            BadRequestException,
+          );
+
+          expectLogged(reason, loggedId);
+        });
+
+        it('logs resend_cooldown and rejects with 429', async () => {
+          attemptsRepository.findOneByUserId.mockResolvedValue(makeAttempt());
+          attemptsRepository.replaceSecret.mockResolvedValue(false);
+
+          await expectStatus(
+            service.reissueAttempt(userId),
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+
+          expectLogged('resend_cooldown', attemptId);
+        });
       });
     });
   });

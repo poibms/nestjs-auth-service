@@ -20,3 +20,12 @@ export type SendConfirmationEmailParams = {
   secret: string;
   attemptId: string;
 };
+
+export type ConfirmationFailureReason =
+  | 'not_found'
+  | 'method_mismatch'
+  | 'consumed'
+  | 'expired'
+  | 'wrong_code'
+  | 'exhausted'
+  | 'resend_cooldown';
