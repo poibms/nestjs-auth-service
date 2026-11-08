@@ -84,7 +84,12 @@ export class AuthService {
       },
     );
 
-    await this.registrationConfirmationService.sendEmail(email, method, secret);
+    await this.registrationConfirmationService.sendEmail({
+      email,
+      method,
+      secret,
+      attemptId,
+    });
 
     return this.registrationConfirmationService.toResponse(method, attemptId);
   }
@@ -114,11 +119,12 @@ export class AuthService {
     const { attemptId, method, secret } =
       await this.registrationConfirmationService.reissueAttempt(user.id);
 
-    await this.registrationConfirmationService.sendEmail(
-      user.email,
+    await this.registrationConfirmationService.sendEmail({
+      email: user.email,
       method,
       secret,
-    );
+      attemptId,
+    });
 
     return this.registrationConfirmationService.toResponse(method, attemptId);
   }

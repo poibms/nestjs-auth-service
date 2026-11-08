@@ -13,3 +13,10 @@ export type ConfirmationRequiredResponse = {
 export type MailContent = Omit<MailMessage, 'to'>;
 
 export type RegisteredUserResponse = Pick<User, 'id' | 'email' | 'status'>;
+
+export type SendConfirmationEmailParams = {
+  email: string;
+  method: ConfirmationMethod;
+  secret: string;
+  attemptId: string;
+};

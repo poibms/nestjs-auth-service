@@ -3,6 +3,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -21,6 +22,7 @@ import {
   ConfirmationRequiredResponse,
   MailContent,
   RegisteredUserResponse,
+  SendConfirmationEmailParams,
 } from './confirmation.types.js';
 import { ConfirmationSecretService } from './confirmation-secret.service.js';
 import {
@@ -42,6 +44,8 @@ interface SecretStrategy {
 
 @Injectable()
 export class RegistrationConfirmationService {
+  private readonly logger = new Logger(RegistrationConfirmationService.name);
+
   constructor(
     private readonly mailerService: MailerService,
     private readonly emailConfirmationAttemptsRepository: EmailConfirmationAttemptsRepository,
@@ -134,11 +138,12 @@ export class RegistrationConfirmationService {
     return { attemptId: attempt.id, method: attempt.method, secret };
   }
 
-  async sendEmail(
-    email: string,
-    method: ConfirmationMethod,
-    secret: string,
-  ): Promise<void> {
+  async sendEmail({
+    attemptId,
+    email,
+    method,
+    secret,
+  }: SendConfirmationEmailParams): Promise<void> {
     const mail = this.strategies[method].buildMail(secret);
 
     try {
@@ -146,10 +151,12 @@ export class RegistrationConfirmationService {
         to: email,
         ...mail,
       });
+      this.logger.log({ event: 'confirmation.email_sent', attemptId, method });
     } catch (err) {
-      if (err instanceof Error) {
-        console.log('Failed to send confirmation email', err.message);
-      }
+      this.logger.error(
+        { event: 'confirmation.email_failed', attemptId, method },
+        err instanceof Error ? err.stack : undefined,
+      );
 
       throw new ServiceUnavailableException(
         'Confirmation email could not be sent',

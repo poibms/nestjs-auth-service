@@ -4,10 +4,11 @@ import {
   BadRequestException,
   HttpException,
   HttpStatus,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { TransactionHost } from '@nestjs-cls/transactional';
-import { Mock } from 'vitest';
+import { Mock, MockInstance } from 'vitest';
 import { RegistrationConfirmationService } from './registration-confirmation.service.js';
 import { EmailConfirmationAttemptsRepository } from './email-confirmation-attempts.repository.js';
 import { ConfirmationSecretService } from './confirmation-secret.service.js';
@@ -166,8 +167,27 @@ describe('RegistrationConfirmationService', () => {
   });
 
   describe('sendEmail', () => {
+    let logSpy: MockInstance<Logger['log']>;
+    let errorSpy: MockInstance<Logger['error']>;
+
+    beforeEach(() => {
+      logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+      errorSpy = vi
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     it('sends OTP email with the code', async () => {
-      await service.sendEmail(email, 'otp', '123456');
+      await service.sendEmail({
+        email,
+        method: 'otp',
+        secret: '123456',
+        attemptId: 'attempt-id',
+      });
 
       expect(mailerService.send).toHaveBeenCalledWith({
         to: email,
@@ -178,7 +198,12 @@ describe('RegistrationConfirmationService', () => {
     });
 
     it('sends magic link email with confirmation url', async () => {
-      await service.sendEmail(email, 'magic_link', 'magic-link-token');
+      await service.sendEmail({
+        email,
+        method: 'magic_link',
+        secret: 'magic-link-token',
+        attemptId: 'attempt-id',
+      });
 
       expect(mailerService.send).toHaveBeenCalledWith({
         to: email,
@@ -193,11 +218,77 @@ describe('RegistrationConfirmationService', () => {
       mailerService.send.mockRejectedValue(smtpError);
 
       const error = await service
-        .sendEmail(email, 'otp', '123456')
+        .sendEmail({
+          email,
+          method: 'otp',
+          secret: '123456',
+          attemptId: 'attempt-id',
+        })
         .catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(ServiceUnavailableException);
       expect((error as ServiceUnavailableException).cause).toBe(smtpError);
+    });
+
+    it('logs the sent event with attempt context', async () => {
+      await service.sendEmail({
+        email,
+        method: 'otp',
+        secret: '123456',
+        attemptId: 'attempt-id',
+      });
+
+      expect(logSpy).toHaveBeenCalledWith({
+        event: 'confirmation.email_sent',
+        attemptId: 'attempt-id',
+        method: 'otp',
+      });
+      expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    it('logs the failed event with stack when mailer fails', async () => {
+      const smtpError = new Error('connect ECONNREFUSED 127.0.0.1:1025');
+      mailerService.send.mockRejectedValue(smtpError);
+
+      await service
+        .sendEmail({
+          email,
+          method: 'otp',
+          secret: '123456',
+          attemptId: 'attempt-id',
+        })
+        .catch(() => undefined);
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        {
+          event: 'confirmation.email_failed',
+          attemptId: 'attempt-id',
+          method: 'otp',
+        },
+        smtpError.stack,
+      );
+      expect(logSpy).not.toHaveBeenCalled();
+    });
+
+    it('never logs the secret or the email', async () => {
+      const params = {
+        email,
+        method: 'otp' as const,
+        secret: '123456',
+        attemptId: 'attempt-id',
+      };
+
+      await service.sendEmail(params);
+      mailerService.send.mockRejectedValue(new Error('smtp down'));
+      await service.sendEmail(params).catch(() => undefined);
+
+      const logged = JSON.stringify([
+        ...logSpy.mock.calls,
+        ...errorSpy.mock.calls,
+      ]);
+      expect(logged).toContain('confirmation.email_failed');
+      expect(logged).not.toContain('123456');
+      expect(logged).not.toContain(email);
     });
   });
 

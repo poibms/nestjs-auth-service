@@ -188,11 +188,12 @@ describe('AuthService', () => {
 
         it('sends the secret to the user email', async () => {
           await service.register(userDto);
-          expect(confirmationService.sendEmail).toHaveBeenCalledWith(
-            userDto.email,
+          expect(confirmationService.sendEmail).toHaveBeenCalledWith({
+            email: userDto.email,
             method,
             secret,
-          );
+            attemptId,
+          });
         });
 
         it('returns confirmation info for the attempt', async () => {
