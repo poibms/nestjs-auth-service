@@ -23,8 +23,8 @@ describe('RegistrationConfirmationService', () => {
   let attemptsRepository: {
     create: Mock<EmailConfirmationAttemptsRepository['create']>;
     findOneById: Mock<EmailConfirmationAttemptsRepository['findOneById']>;
-    findOneBySecret: Mock<
-      EmailConfirmationAttemptsRepository['findOneBySecret']
+    findOneBySecretHash: Mock<
+      EmailConfirmationAttemptsRepository['findOneBySecretHash']
     >;
     reserveOtpAttempt: Mock<
       EmailConfirmationAttemptsRepository['reserveOtpAttempt']
@@ -56,7 +56,7 @@ describe('RegistrationConfirmationService', () => {
     attemptsRepository = {
       create: vi.fn(),
       findOneById: vi.fn(),
-      findOneBySecret: vi.fn(),
+      findOneBySecretHash: vi.fn(),
       reserveOtpAttempt: vi.fn().mockResolvedValue(true),
       markConsumed: vi.fn().mockResolvedValue(true),
     };
@@ -421,7 +421,7 @@ describe('RegistrationConfirmationService', () => {
       const confirm = () => service.confirmMagicLink({ token }, now);
 
       beforeEach(() => {
-        attemptsRepository.findOneBySecret.mockResolvedValue(
+        attemptsRepository.findOneBySecretHash.mockResolvedValue(
           makeAttempt({ method: 'magic_link', secretHash: 'b'.repeat(64) }),
         );
       });
@@ -433,7 +433,7 @@ describe('RegistrationConfirmationService', () => {
           status: 'active',
         });
         expect(secretService.hashToken).toHaveBeenCalledWith(token);
-        expect(attemptsRepository.findOneBySecret).toHaveBeenCalledWith(
+        expect(attemptsRepository.findOneBySecretHash).toHaveBeenCalledWith(
           'b'.repeat(64),
         );
         expect(attemptsRepository.markConsumed).toHaveBeenCalledWith(
@@ -465,7 +465,7 @@ describe('RegistrationConfirmationService', () => {
           }),
         ],
       ])('rejects with 400 when %s', async (_case, attempt) => {
-        attemptsRepository.findOneBySecret.mockResolvedValue(attempt);
+        attemptsRepository.findOneBySecretHash.mockResolvedValue(attempt);
 
         await expect(confirm()).rejects.toThrow(BadRequestException);
         expect(attemptsRepository.markConsumed).not.toHaveBeenCalled();

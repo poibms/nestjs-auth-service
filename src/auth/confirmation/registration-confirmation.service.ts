@@ -100,7 +100,6 @@ export class RegistrationConfirmationService {
         hashedToken,
       );
 
-    if (attempt && this.isExhausted(attempt)) this.throwTooManyRequestsError();
     this.assertPending(attempt, 'magic_link', now);
 
     return this.activate(attempt.id, attempt.userId, now);
