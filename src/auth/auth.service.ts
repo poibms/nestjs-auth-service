@@ -48,6 +48,12 @@ export class AuthService {
         })
       ) {
         const user = await this.createUser(email, passwordHash, 'active');
+        this.logger.log({
+          event: 'registration.succeeded',
+          userId: user.id,
+          status: user.status,
+        });
+
         return { id: user.id, email: user.email, status: user.status };
       }
 
@@ -58,6 +64,10 @@ export class AuthService {
       return await this.registerWithConfirmation(email, passwordHash, method);
     } catch (err) {
       if (err instanceof EmailAlreadyExistsError) {
+        this.logger.warn({
+          event: 'registration.failed',
+          reason: 'email_taken',
+        });
         throw new ConflictException('Email is already registered');
       }
       throw err;
@@ -77,15 +87,22 @@ export class AuthService {
     passwordHash: string,
     method: ConfirmationMethod,
   ): Promise<ConfirmationRequiredResponse> {
-    const { attemptId, secret } = await this.transactionHost.withTransaction(
-      async () => {
+    const { attemptId, secret, userId } =
+      await this.transactionHost.withTransaction(async () => {
         const user = await this.createUser(email, passwordHash, 'pending');
-        return this.registrationConfirmationService.createAttempt(
-          user.id,
-          method,
-        );
-      },
-    );
+        const attempt =
+          await this.registrationConfirmationService.createAttempt(
+            user.id,
+            method,
+          );
+        return { ...attempt, userId: user.id };
+      });
+
+    this.logger.log({
+      event: 'registration.succeeded',
+      userId: userId,
+      status: 'pending',
+    });
 
     await this.registrationConfirmationService.sendEmail({
       email,

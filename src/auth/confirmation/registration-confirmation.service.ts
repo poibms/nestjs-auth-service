@@ -250,12 +250,12 @@ export class RegistrationConfirmationService {
     this.throwBadRequest('expired', attemptId);
   }
 
-  private activate(
+  private async activate(
     attemptId: string,
     userId: string,
     now: Date,
   ): Promise<RegisteredUserResponse> {
-    return this.transactionHost.withTransaction(async () => {
+    const result = await this.transactionHost.withTransaction(async () => {
       const isConsumed =
         await this.emailConfirmationAttemptsRepository.markConsumed(
           attemptId,
@@ -268,6 +268,9 @@ export class RegistrationConfirmationService {
 
       return { id: user.id, email: user.email, status: user.status };
     });
+
+    this.logger.log({ event: 'confirmation.succeeded', attemptId, userId });
+    return result;
   }
 
   private throwBadRequest(

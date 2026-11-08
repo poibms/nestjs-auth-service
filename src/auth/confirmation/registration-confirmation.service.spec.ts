@@ -584,6 +584,64 @@ describe('RegistrationConfirmationService', () => {
       });
     });
 
+    describe('success logging', () => {
+      const confirm = () => service.confirmOtp({ attemptId, code }, now);
+      const succeeded = {
+        event: 'confirmation.succeeded',
+        attemptId,
+        userId,
+      };
+      let logSpy: MockInstance<Logger['log']>;
+
+      beforeEach(() => {
+        logSpy = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+        vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+        attemptsRepository.findOneById.mockResolvedValue(makeAttempt());
+      });
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it('logs a confirmed OTP attempt', async () => {
+        await confirm();
+
+        expect(logSpy).toHaveBeenCalledTimes(1);
+        expect(logSpy).toHaveBeenCalledWith(succeeded);
+      });
+
+      it('logs a confirmed magic link attempt', async () => {
+        attemptsRepository.findOneBySecretHash.mockResolvedValue(
+          makeAttempt({ method: 'magic_link' }),
+        );
+
+        await service.confirmMagicLink({ token }, now);
+
+        expect(logSpy).toHaveBeenCalledWith(succeeded);
+      });
+
+      it('does not log success when the code is wrong', async () => {
+        secretService.verifyOtp.mockReturnValue(false);
+
+        await confirm().catch(() => undefined);
+
+        expect(logSpy).not.toHaveBeenCalled();
+      });
+
+      it('does not log success when the transaction commit fails', async () => {
+        transactionHost.withTransaction.mockImplementationOnce(
+          async (fn: () => Promise<unknown>) => {
+            await fn();
+            throw new Error('commit failed');
+          },
+        );
+
+        await confirm().catch(() => undefined);
+
+        expect(logSpy).not.toHaveBeenCalled();
+      });
+    });
+
     describe('failure logging', () => {
       const confirm = () => service.confirmOtp({ attemptId, code }, now);
       let warnSpy: MockInstance<Logger['warn']>;
