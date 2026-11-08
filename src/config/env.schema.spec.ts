@@ -24,6 +24,8 @@ describe('envSchema', () => {
       REGISTRATION_CONFIRMATION_ENABLED: false,
       REGISTRATION_CONFIRMATION_METHOD: 'otp',
       SMTP_PORT: 1025,
+      AUTH_RATE_TTL_MS: 60_000,
+      AUTH_RATE_LIMIT: 10,
     });
   });
 
@@ -144,4 +146,25 @@ describe('envSchema', () => {
       ]);
     });
   });
+
+  describe.each(['AUTH_RATE_TTL_MS', 'AUTH_RATE_LIMIT'] as const)(
+    '%s',
+    (key) => {
+      it('coerces string to number', () => {
+        const result = envSchema.safeParse({ ...base, [key]: '30000' });
+
+        expect(result.success).toBe(true);
+        expect(result.data?.[key]).toBe(30_000);
+      });
+
+      it.each([
+        ['zero', '0'],
+        ['negative', '-1'],
+        ['non-integer', '1.5'],
+        ['non-numeric', 'abc'],
+      ])('rejects %s value', (_case, value) => {
+        expect(issuePaths({ ...base, [key]: value })).toEqual([[key]]);
+      });
+    },
+  );
 });

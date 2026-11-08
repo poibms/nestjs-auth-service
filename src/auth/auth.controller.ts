@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Post,
   Res,
+  UseGuards,
   UsePipes,
 } from '@nestjs/common';
 import { RegisterDto } from './dto/register.dto.js';
@@ -16,11 +17,13 @@ import {
 } from './dto/confirm-registration.dto.js';
 import { ZodValidationPipe } from '#common/pipes/zod-validation.pipe.js';
 import { resendSchema, type ResendType } from './dto/resend.dto.js';
+import { ThrottlerGuard } from '@nestjs/throttler';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @UseGuards(ThrottlerGuard)
   @Post('register')
   async register(
     @Body() userRegisterDto: RegisterDto,
@@ -41,6 +44,7 @@ export class AuthController {
     return this.authService.confirm(dto);
   }
 
+  @UseGuards(ThrottlerGuard)
   @Post('register/resend')
   @HttpCode(202)
   @UsePipes(new ZodValidationPipe(resendSchema))

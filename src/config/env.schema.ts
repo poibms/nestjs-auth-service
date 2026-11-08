@@ -12,6 +12,8 @@ export const envSchema = z.object({
   SMTP_HOST: z.string(),
   SMTP_PORT: z.coerce.number().int().default(1025),
   MAIL_FROM: z.email(),
+  AUTH_RATE_TTL_MS: z.coerce.number().int().positive().default(60_000),
+  AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(10),
 });
 
 export type Env = z.infer<typeof envSchema>;
