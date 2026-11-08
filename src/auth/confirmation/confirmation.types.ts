@@ -25,6 +25,7 @@ export type ConfirmationFailureReason =
   | 'not_found'
   | 'method_mismatch'
   | 'consumed'
+  | 'secret_replaced'
   | 'expired'
   | 'wrong_code'
   | 'exhausted'
