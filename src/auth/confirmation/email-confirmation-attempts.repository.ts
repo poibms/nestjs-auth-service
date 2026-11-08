@@ -29,6 +29,12 @@ export class EmailConfirmationAttemptsRepository {
     });
   }
 
+  async findOneByUserId(userId: string) {
+    return await this.transactionHost.tx.emailConfirmationAttempt.findUnique({
+      where: { userId },
+    });
+  }
+
   async findOneBySecretHash(hashedToken: string) {
     return await this.transactionHost.tx.emailConfirmationAttempt.findUnique({
       where: { secretHash: hashedToken },
@@ -59,6 +65,28 @@ export class EmailConfirmationAttemptsRepository {
       await this.transactionHost.tx.emailConfirmationAttempt.updateMany({
         where: { id, consumedAt: null },
         data: { consumedAt },
+      });
+
+    return count === 1;
+  }
+
+  async replaceSecret({
+    expiresAt,
+    id,
+    secretHash,
+    now,
+    sentBefore,
+  }: {
+    id: string;
+    secretHash: string;
+    expiresAt: Date;
+    now: Date;
+    sentBefore: Date;
+  }): Promise<boolean> {
+    const { count } =
+      await this.transactionHost.tx.emailConfirmationAttempt.updateMany({
+        where: { id, consumedAt: null, sentAt: { lte: sentBefore } },
+        data: { secretHash, attempts: 0, expiresAt, sentAt: now },
       });
 
     return count === 1;

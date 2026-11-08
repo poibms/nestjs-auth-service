@@ -100,10 +100,38 @@ export class RegistrationConfirmationService {
         hashedToken,
       );
 
-    if (attempt && this.isExhausted(attempt)) this.throwTooManyRequestsError();
     this.assertPending(attempt, 'magic_link', now);
 
     return this.activate(attempt.id, attempt.userId, now);
+  }
+
+  async reissueAttempt(userId: string): Promise<{
+    attemptId: string;
+    method: ConfirmationMethod;
+    secret: string;
+  }> {
+    const attempt =
+      await this.emailConfirmationAttemptsRepository.findOneByUserId(userId);
+
+    if (!attempt || attempt.consumedAt) this.throwBadRequest();
+
+    const now = Date.now();
+
+    const strategy = this.strategies[attempt.method];
+    const secret = strategy.generate();
+
+    const isAttemptUpdated =
+      await this.emailConfirmationAttemptsRepository.replaceSecret({
+        expiresAt: new Date(now + CONFIRMATION_TTL_SECONDS * 1000),
+        id: attempt.id,
+        secretHash: strategy.hash(attempt.id, secret),
+        now: new Date(now),
+        sentBefore: new Date(now - RESEND_COOLDOWN_SECONDS * 1000),
+      });
+
+    if (!isAttemptUpdated) this.throwTooManyRequestsError();
+
+    return { attemptId: attempt.id, method: attempt.method, secret };
   }
 
   async sendEmail(
