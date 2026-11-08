@@ -106,9 +106,7 @@ export class RegistrationConfirmationService {
     return this.activate(attempt.id, attempt.userId, now);
   }
 
-  async reissueAttempt(
-    userId: string,
-  ): Promise<{
+  async reissueAttempt(userId: string): Promise<{
     attemptId: string;
     method: ConfirmationMethod;
     secret: string;
@@ -120,24 +118,21 @@ export class RegistrationConfirmationService {
 
     const now = Date.now();
 
-    if (attempt.method === 'otp') {
-      const otp = this.confirmationSecretService.generateOtp();
-      const hashedOtp = this.confirmationSecretService.hashOtp(attempt.id, otp);
-      const isAttemptUpdated =
-        await this.emailConfirmationAttemptsRepository.replaceSecret({
-          expiresAt: new Date(now + CONFIRMATION_TTL_SECONDS * 1000),
-          id: attempt.id,
-          secretHash: hashedOtp,
-          now: new Date(now),
-          sentBefore: new Date(now - RESEND_COOLDOWN_SECONDS * 1000),
-        });
+    const strategy = this.strategies[attempt.method];
+    const secret = strategy.generate();
 
-      if (!isAttemptUpdated) this.throwTooManyRequestsError();
+    const isAttemptUpdated =
+      await this.emailConfirmationAttemptsRepository.replaceSecret({
+        expiresAt: new Date(now + CONFIRMATION_TTL_SECONDS * 1000),
+        id: attempt.id,
+        secretHash: strategy.hash(attempt.id, secret),
+        now: new Date(now),
+        sentBefore: new Date(now - RESEND_COOLDOWN_SECONDS * 1000),
+      });
 
-      return { attemptId: attempt.id, method: 'otp', secret: otp };
-    }
+    if (!isAttemptUpdated) this.throwTooManyRequestsError();
 
-    return this.throwBadRequest();
+    return { attemptId: attempt.id, method: attempt.method, secret };
   }
 
   async sendEmail(
