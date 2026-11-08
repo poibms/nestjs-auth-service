@@ -3,16 +3,25 @@ import { EmailAlreadyExistsError, UsersRepository } from '#users/index.js';
 import { Test } from '@nestjs/testing';
 import { AuthService } from './auth.service.js';
 import { RegisterDto } from './dto/register.dto.js';
-import { Mock } from 'vitest';
+import { Mock, MockInstance } from 'vitest';
 import bcrypt from 'bcrypt';
-import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { TransactionHost } from '@nestjs-cls/transactional';
 import { RegistrationConfirmationService } from './confirmation/registration-confirmation.service.js';
 import { ConfirmationRequiredResponse } from './confirmation/confirmation.types.js';
+import { User } from '../generated/prisma/client.js';
 
 describe('AuthService', () => {
   let service: AuthService;
-  let usersRepository: { create: Mock<UsersRepository['create']> };
+  let usersRepository: {
+    create: Mock<UsersRepository['create']>;
+    getUserByEmail: Mock<UsersRepository['getUserByEmail']>;
+  };
   let confirmationService: {
     createAttempt: Mock<RegistrationConfirmationService['createAttempt']>;
     sendEmail: Mock<RegistrationConfirmationService['sendEmail']>;
@@ -32,7 +41,7 @@ describe('AuthService', () => {
 
   beforeEach(async () => {
     config = { BCRYPT_ROUNDS: 4 };
-    usersRepository = { create: vi.fn() };
+    usersRepository = { create: vi.fn(), getUserByEmail: vi.fn() };
     confirmationService = {
       createAttempt: vi.fn(),
       sendEmail: vi.fn(),
@@ -66,6 +75,36 @@ describe('AuthService', () => {
     }).compile();
 
     service = moduleRef.get(AuthService);
+  });
+
+  describe('resend', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it.each([
+      ['not_found', null, undefined],
+      ['not_pending', { id: userId, status: 'active' } as User, userId],
+    ])(
+      'rejects with 400 and logs %s without the email',
+      async (reason, user, loggedUserId) => {
+        const warnSpy = vi
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => {});
+        usersRepository.getUserByEmail.mockResolvedValue(user);
+
+        await expect(service.resend({ email: userDto.email })).rejects.toThrow(
+          BadRequestException,
+        );
+
+        expect(warnSpy).toHaveBeenCalledWith({
+          event: 'resend.failed',
+          reason,
+          userId: loggedUserId,
+        });
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(userDto.email);
+      },
+    );
   });
 
   describe('register', () => {
@@ -188,11 +227,12 @@ describe('AuthService', () => {
 
         it('sends the secret to the user email', async () => {
           await service.register(userDto);
-          expect(confirmationService.sendEmail).toHaveBeenCalledWith(
-            userDto.email,
+          expect(confirmationService.sendEmail).toHaveBeenCalledWith({
+            email: userDto.email,
             method,
             secret,
-          );
+            attemptId,
+          });
         });
 
         it('returns confirmation info for the attempt', async () => {
@@ -234,8 +274,123 @@ describe('AuthService', () => {
           await expect(service.register(userDto)).rejects.toBe(dbError);
           expect(confirmationService.sendEmail).not.toHaveBeenCalled();
         });
+
+        describe('logging', () => {
+          let logSpy: MockInstance<Logger['log']>;
+          let warnSpy: MockInstance<Logger['warn']>;
+          const succeeded = {
+            event: 'registration.succeeded',
+            userId,
+            status: 'pending',
+          };
+
+          beforeEach(() => {
+            logSpy = vi
+              .spyOn(Logger.prototype, 'log')
+              .mockImplementation(() => {});
+            warnSpy = vi
+              .spyOn(Logger.prototype, 'warn')
+              .mockImplementation(() => {});
+          });
+
+          afterEach(() => {
+            vi.restoreAllMocks();
+          });
+
+          it('logs the registered pending user', async () => {
+            await service.register(userDto);
+
+            expect(logSpy).toHaveBeenCalledTimes(1);
+            expect(logSpy).toHaveBeenCalledWith(succeeded);
+          });
+
+          it('logs the registration even when email sending fails', async () => {
+            confirmationService.sendEmail.mockRejectedValue(
+              new ServiceUnavailableException(),
+            );
+
+            await service.register(userDto).catch(() => undefined);
+
+            expect(logSpy).toHaveBeenCalledWith(succeeded);
+          });
+
+          it('does not log success when the transaction fails', async () => {
+            confirmationService.createAttempt.mockRejectedValue(
+              new Error('connection lost'),
+            );
+
+            await service.register(userDto).catch(() => undefined);
+
+            expect(logSpy).not.toHaveBeenCalled();
+          });
+
+          it('logs email_taken without personal data', async () => {
+            usersRepository.create.mockRejectedValue(
+              new EmailAlreadyExistsError(),
+            );
+
+            await service.register(userDto).catch(() => undefined);
+
+            expect(warnSpy).toHaveBeenCalledWith({
+              event: 'registration.failed',
+              reason: 'email_taken',
+            });
+            expect(logSpy).not.toHaveBeenCalled();
+          });
+
+          it('never logs the email, password or secret', async () => {
+            await service.register(userDto);
+            usersRepository.create.mockRejectedValue(
+              new EmailAlreadyExistsError(),
+            );
+            await service.register(userDto).catch(() => undefined);
+
+            const logged = JSON.stringify([
+              ...logSpy.mock.calls,
+              ...warnSpy.mock.calls,
+            ]);
+            expect(logged).toContain('email_taken');
+            expect(logged).not.toContain(userDto.email);
+            expect(logged).not.toContain(userDto.password);
+            expect(logged).not.toContain(secret);
+          });
+        });
       },
     );
+
+    describe('logging without confirmation', () => {
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it('logs the registered active user', async () => {
+        const logSpy = vi
+          .spyOn(Logger.prototype, 'log')
+          .mockImplementation(() => {});
+
+        await service.register(userDto);
+
+        expect(logSpy).toHaveBeenCalledWith({
+          event: 'registration.succeeded',
+          userId,
+          status: 'active',
+        });
+      });
+
+      it('logs email_taken', async () => {
+        const warnSpy = vi
+          .spyOn(Logger.prototype, 'warn')
+          .mockImplementation(() => {});
+        usersRepository.create.mockRejectedValue(new EmailAlreadyExistsError());
+
+        await service.register(userDto).catch(() => undefined);
+
+        expect(warnSpy).toHaveBeenCalledWith({
+          event: 'registration.failed',
+          reason: 'email_taken',
+        });
+      });
+    });
 
     describe('errors', () => {
       it('maps EmailAlreadyExistsError to ConflictException', async () => {

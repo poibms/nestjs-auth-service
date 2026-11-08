@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { RegisterDto } from './dto/register.dto.js';
 import bcrypt from 'bcrypt';
@@ -24,6 +25,8 @@ import { ResendType } from './dto/resend.dto.js';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly usersRepository: UsersRepository,
     private readonly configService: ConfigService<Env, true>,
@@ -45,6 +48,12 @@ export class AuthService {
         })
       ) {
         const user = await this.createUser(email, passwordHash, 'active');
+        this.logger.log({
+          event: 'registration.succeeded',
+          userId: user.id,
+          status: user.status,
+        });
+
         return { id: user.id, email: user.email, status: user.status };
       }
 
@@ -55,6 +64,10 @@ export class AuthService {
       return await this.registerWithConfirmation(email, passwordHash, method);
     } catch (err) {
       if (err instanceof EmailAlreadyExistsError) {
+        this.logger.warn({
+          event: 'registration.failed',
+          reason: 'email_taken',
+        });
         throw new ConflictException('Email is already registered');
       }
       throw err;
@@ -74,17 +87,29 @@ export class AuthService {
     passwordHash: string,
     method: ConfirmationMethod,
   ): Promise<ConfirmationRequiredResponse> {
-    const { attemptId, secret } = await this.transactionHost.withTransaction(
-      async () => {
+    const { attemptId, secret, userId } =
+      await this.transactionHost.withTransaction(async () => {
         const user = await this.createUser(email, passwordHash, 'pending');
-        return this.registrationConfirmationService.createAttempt(
-          user.id,
-          method,
-        );
-      },
-    );
+        const attempt =
+          await this.registrationConfirmationService.createAttempt(
+            user.id,
+            method,
+          );
+        return { ...attempt, userId: user.id };
+      });
 
-    await this.registrationConfirmationService.sendEmail(email, method, secret);
+    this.logger.log({
+      event: 'registration.succeeded',
+      userId: userId,
+      status: 'pending',
+    });
+
+    await this.registrationConfirmationService.sendEmail({
+      email,
+      method,
+      secret,
+      attemptId,
+    });
 
     return this.registrationConfirmationService.toResponse(method, attemptId);
   }
@@ -106,19 +131,26 @@ export class AuthService {
 
   async resend(resendDto: ResendType) {
     const user = await this.usersRepository.getUserByEmail(resendDto.email);
-    if (user?.status !== 'pending')
+    if (user?.status !== 'pending') {
+      this.logger.warn({
+        event: 'resend.failed',
+        reason: user ? 'not_pending' : 'not_found',
+        userId: user?.id,
+      });
       throw new BadRequestException(
         'Invalid email or account already confirmed',
       );
+    }
 
     const { attemptId, method, secret } =
       await this.registrationConfirmationService.reissueAttempt(user.id);
 
-    await this.registrationConfirmationService.sendEmail(
-      user.email,
+    await this.registrationConfirmationService.sendEmail({
+      email: user.email,
       method,
       secret,
-    );
+      attemptId,
+    });
 
     return this.registrationConfirmationService.toResponse(method, attemptId);
   }
