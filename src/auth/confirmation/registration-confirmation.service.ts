@@ -84,7 +84,11 @@ export class RegistrationConfirmationService {
       this.throwTooManyRequestsError('exhausted', attemptId);
     this.assertPending(attempt, 'otp', now);
 
-    await this.reserveOtpAttempt(attempt.id, now);
+    await this.reserveOtpAttempt({
+      attemptId: attempt.id,
+      now,
+      secretHash: attempt.secretHash,
+    });
 
     if (
       !this.confirmationSecretService.verifyOtp(
@@ -96,7 +100,12 @@ export class RegistrationConfirmationService {
       this.throwBadRequest('wrong_code', attempt.id);
     }
 
-    return this.activate(attempt.id, attempt.userId, now);
+    return this.activate({
+      attemptId: attempt.id,
+      userId: attempt.userId,
+      now,
+      secretHash: attempt.secretHash,
+    });
   }
 
   async confirmMagicLink({ token }: MagicLinkConfirm, now: Date) {
@@ -108,7 +117,12 @@ export class RegistrationConfirmationService {
 
     this.assertPending(attempt, 'magic_link', now);
 
-    return this.activate(attempt.id, attempt.userId, now);
+    return this.activate({
+      attemptId: attempt.id,
+      userId: attempt.userId,
+      now,
+      secretHash: attempt.secretHash,
+    });
   }
 
   async reissueAttempt(userId: string): Promise<{
@@ -233,13 +247,22 @@ export class RegistrationConfirmationService {
     return !attempt.consumedAt && attempt.attempts >= MAX_OTP_ATTEMPTS_COUNT;
   }
 
-  private async reserveOtpAttempt(attemptId: string, now: Date): Promise<void> {
+  private async reserveOtpAttempt({
+    attemptId,
+    now,
+    secretHash,
+  }: {
+    attemptId: string;
+    now: Date;
+    secretHash: string;
+  }): Promise<void> {
     const reserved =
-      await this.emailConfirmationAttemptsRepository.reserveOtpAttempt(
+      await this.emailConfirmationAttemptsRepository.reserveOtpAttempt({
         attemptId,
-        MAX_OTP_ATTEMPTS_COUNT,
+        maxAttemptsCount: MAX_OTP_ATTEMPTS_COUNT,
         now,
-      );
+        secretHash,
+      });
     if (reserved) return;
 
     const current =
@@ -247,21 +270,35 @@ export class RegistrationConfirmationService {
     if (current && this.isExhausted(current))
       this.throwTooManyRequestsError('exhausted', attemptId);
     this.assertPending(current, 'otp', now);
-    this.throwBadRequest('expired', attemptId);
+    this.throwBadRequest('secret_replaced', attemptId);
   }
 
-  private async activate(
-    attemptId: string,
-    userId: string,
-    now: Date,
-  ): Promise<RegisteredUserResponse> {
+  private async activate({
+    attemptId,
+    now,
+    userId,
+    secretHash,
+  }: {
+    attemptId: string;
+    userId: string;
+    now: Date;
+    secretHash: string;
+  }): Promise<RegisteredUserResponse> {
     const result = await this.transactionHost.withTransaction(async () => {
       const isConsumed =
-        await this.emailConfirmationAttemptsRepository.markConsumed(
+        await this.emailConfirmationAttemptsRepository.markConsumed({
+          id: attemptId,
+          consumedAt: now,
+          secretHash,
+        });
+      if (!isConsumed) {
+        const current =
+          await this.emailConfirmationAttemptsRepository.findOneById(attemptId);
+        this.throwBadRequest(
+          current?.secretHash === secretHash ? 'consumed' : 'secret_replaced',
           attemptId,
-          now,
         );
-      if (!isConsumed) this.throwBadRequest('consumed', attemptId);
+      }
 
       const user = await this.usersRepository.markEmailVerified(userId);
       if (!user) this.throwBadRequest('not_found', attemptId);

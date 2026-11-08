@@ -41,11 +41,17 @@ export class EmailConfirmationAttemptsRepository {
     });
   }
 
-  async reserveOtpAttempt(
-    attemptId: string,
-    maxAttemptsCount: number,
-    now: Date,
-  ): Promise<boolean> {
+  async reserveOtpAttempt({
+    attemptId,
+    maxAttemptsCount,
+    now,
+    secretHash,
+  }: {
+    attemptId: string;
+    maxAttemptsCount: number;
+    now: Date;
+    secretHash: string;
+  }): Promise<boolean> {
     const { count } =
       await this.transactionHost.tx.emailConfirmationAttempt.updateMany({
         where: {
@@ -53,6 +59,7 @@ export class EmailConfirmationAttemptsRepository {
           attempts: { lt: maxAttemptsCount },
           expiresAt: { gt: now },
           consumedAt: null,
+          secretHash,
         },
         data: { attempts: { increment: 1 } },
       });
@@ -60,10 +67,18 @@ export class EmailConfirmationAttemptsRepository {
     return count === 1;
   }
 
-  async markConsumed(id: string, consumedAt: Date): Promise<boolean> {
+  async markConsumed({
+    id,
+    consumedAt,
+    secretHash,
+  }: {
+    id: string;
+    consumedAt: Date;
+    secretHash: string;
+  }): Promise<boolean> {
     const { count } =
       await this.transactionHost.tx.emailConfirmationAttempt.updateMany({
-        where: { id, consumedAt: null },
+        where: { id, consumedAt: null, secretHash },
         data: { consumedAt },
       });
 

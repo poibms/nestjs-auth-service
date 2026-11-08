@@ -365,11 +365,12 @@ describe('RegistrationConfirmationService', () => {
       it('reserves the attempt before comparing the code', async () => {
         await confirm();
 
-        expect(attemptsRepository.reserveOtpAttempt).toHaveBeenCalledWith(
+        expect(attemptsRepository.reserveOtpAttempt).toHaveBeenCalledWith({
           attemptId,
-          5,
+          maxAttemptsCount: 5,
           now,
-        );
+          secretHash: 'a'.repeat(64),
+        });
         expect(
           attemptsRepository.reserveOtpAttempt.mock.invocationCallOrder[0],
         ).toBeLessThan(secretService.verifyOtp.mock.invocationCallOrder[0]);
@@ -377,6 +378,21 @@ describe('RegistrationConfirmationService', () => {
           attemptId,
           code,
           'a'.repeat(64),
+        );
+      });
+
+      it('uses the secret hash from the first read in reserve and activation', async () => {
+        attemptsRepository.findOneById
+          .mockResolvedValueOnce(makeAttempt())
+          .mockResolvedValue(makeAttempt({ secretHash: 'c'.repeat(64) }));
+
+        await confirm();
+
+        expect(attemptsRepository.reserveOtpAttempt).toHaveBeenCalledWith(
+          expect.objectContaining({ secretHash: 'a'.repeat(64) }),
+        );
+        expect(attemptsRepository.markConsumed).toHaveBeenCalledWith(
+          expect.objectContaining({ secretHash: 'a'.repeat(64) }),
         );
       });
 
@@ -405,10 +421,11 @@ describe('RegistrationConfirmationService', () => {
 
         await confirm();
 
-        expect(attemptsRepository.markConsumed).toHaveBeenCalledWith(
-          attemptId,
-          now,
-        );
+        expect(attemptsRepository.markConsumed).toHaveBeenCalledWith({
+          id: attemptId,
+          consumedAt: now,
+          secretHash: 'a'.repeat(64),
+        });
         expect(usersRepository.markEmailVerified).toHaveBeenCalledWith(userId);
         expect(calledInTransaction).toEqual([true, true]);
       });
@@ -540,10 +557,11 @@ describe('RegistrationConfirmationService', () => {
         expect(attemptsRepository.findOneBySecretHash).toHaveBeenCalledWith(
           'b'.repeat(64),
         );
-        expect(attemptsRepository.markConsumed).toHaveBeenCalledWith(
-          attemptId,
-          now,
-        );
+        expect(attemptsRepository.markConsumed).toHaveBeenCalledWith({
+          id: attemptId,
+          consumedAt: now,
+          secretHash: 'b'.repeat(64),
+        });
         expect(usersRepository.markEmailVerified).toHaveBeenCalledWith(userId);
       });
 
@@ -692,12 +710,12 @@ describe('RegistrationConfirmationService', () => {
         expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(code);
       });
 
-      it('logs expired when the reservation fails but the attempt still looks pending', async () => {
+      it('logs secret_replaced when the reservation fails but the attempt still looks pending', async () => {
         attemptsRepository.reserveOtpAttempt.mockResolvedValue(false);
 
         await confirm().catch(() => undefined);
 
-        expectLogged('expired', attemptId);
+        expectLogged('secret_replaced', attemptId);
       });
 
       it('logs consumed with attemptId when activation loses the race', async () => {
@@ -706,6 +724,17 @@ describe('RegistrationConfirmationService', () => {
         await confirm().catch(() => undefined);
 
         expectLogged('consumed', attemptId);
+      });
+
+      it('logs secret_replaced when the secret changes before activation', async () => {
+        attemptsRepository.findOneById
+          .mockResolvedValueOnce(makeAttempt())
+          .mockResolvedValue(makeAttempt({ secretHash: 'c'.repeat(64) }));
+        attemptsRepository.markConsumed.mockResolvedValue(false);
+
+        await confirm().catch(() => undefined);
+
+        expectLogged('secret_replaced', attemptId);
       });
 
       it('logs not_found with attemptId when the user cannot be activated', async () => {
