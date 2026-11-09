@@ -21,7 +21,11 @@ export class ZodValidationPipe implements PipeTransform {
   constructor(private schema?: ZodType) {}
 
   transform(value: unknown, metadata: ArgumentMetadata) {
-    const schema = this.schema ?? getZodSchema(metadata.metatype);
+    const schema =
+      this.schema ??
+      (metadata.schema instanceof ZodType ? metadata.schema : undefined) ??
+      getZodSchema(metadata.metatype);
+
     if (!schema) {
       return value;
     }

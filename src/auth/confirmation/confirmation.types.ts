@@ -1,18 +1,25 @@
 import { MailMessage } from '../../mailer/mail-message.js';
 import { ConfirmationMethod } from '../../generated/prisma/enums.js';
-import { User } from '../../generated/prisma/client.js';
+import z from 'zod';
+import { userSchema } from '#users/dto/user.types.js';
 
-export type ConfirmationRequiredResponse = {
-  confirmationRequired: true;
-  method: ConfirmationMethod;
-  attemptId: string;
-  expiresInSeconds: number;
-  resendAfterSeconds: number;
-};
+export const confirmationRequiredSchema = z.object({
+  confirmationRequired: z.literal(true),
+  method: z.enum(ConfirmationMethod),
+  attemptId: z.uuid(),
+  expiresInSeconds: z.number().int().positive(),
+  resendAfterSeconds: z.number().int().nonnegative(),
+});
+
+export type ConfirmationRequiredResponse = z.infer<
+  typeof confirmationRequiredSchema
+>;
 
 export type MailContent = Omit<MailMessage, 'to'>;
 
-export type RegisteredUserResponse = Pick<User, 'id' | 'email' | 'status'>;
+export const registeredUserSchema = userSchema;
+
+export type RegisteredUserResponse = z.infer<typeof registeredUserSchema>;
 
 export type SendConfirmationEmailParams = {
   email: string;
