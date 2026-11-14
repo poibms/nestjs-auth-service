@@ -167,4 +167,27 @@ describe('envSchema', () => {
       });
     },
   );
+
+  describe('BCRYPT_ROUNDS', () => {
+    it.each([
+      ['min boundary', '12', 12],
+      ['max boundary', '15', 15],
+    ])('accepts %s', (_case, value, expected) => {
+      const result = envSchema.safeParse({ ...base, BCRYPT_ROUNDS: value });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.BCRYPT_ROUNDS).toBe(expected);
+    });
+
+    it.each([
+      ['below min', '11'],
+      ['above max', '16'],
+      ['non-integer', '12.5'],
+      ['non-numeric', 'abc'],
+    ])('rejects %s value', (_case, value) => {
+      expect(issuePaths({ ...base, BCRYPT_ROUNDS: value })).toEqual([
+        ['BCRYPT_ROUNDS'],
+      ]);
+    });
+  });
 });
