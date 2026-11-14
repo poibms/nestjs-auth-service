@@ -7,11 +7,11 @@ import { EmailConfirmationAttemptsRepository } from '../src/auth/confirmation/em
 import { RegistrationConfirmationService } from '../src/auth/confirmation/registration-confirmation.service.js';
 import { ConfirmationMethod } from '../src/generated/prisma/enums.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { resetDatabase } from './utils/reset-database.js';
 
 describe('Confirmation races with resend (e2e)', () => {
   const code = '123456';
   const token = 'stale-magic-link-token';
-  const emails: string[] = [];
 
   let app: INestApplication;
   let prisma: PrismaService;
@@ -33,18 +33,18 @@ describe('Confirmation races with resend (e2e)', () => {
     service = app.get(RegistrationConfirmationService);
   });
 
+  beforeEach(() => resetDatabase(prisma));
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   afterAll(async () => {
-    await prisma.user.deleteMany({ where: { email: { in: emails } } });
     await app.close();
   });
 
   const seed = async (method: ConfirmationMethod) => {
     const email = `race-${randomUUID()}@race.test`;
-    emails.push(email);
     const user = await prisma.user.create({
       data: { email, passwordHash: 'unused', status: 'pending' },
     });
