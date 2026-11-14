@@ -8,6 +8,7 @@ import bcrypt from 'bcrypt';
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -26,6 +27,7 @@ describe('AuthService', () => {
     createAttempt: Mock<RegistrationConfirmationService['createAttempt']>;
     sendEmail: Mock<RegistrationConfirmationService['sendEmail']>;
     toResponse: Mock<RegistrationConfirmationService['toResponse']>;
+    reissueAttempt: Mock<RegistrationConfirmationService['reissueAttempt']>;
   };
   let transactionHost: {
     withTransaction: Mock<(fn: () => Promise<unknown>) => Promise<unknown>>;
@@ -46,6 +48,7 @@ describe('AuthService', () => {
       createAttempt: vi.fn(),
       sendEmail: vi.fn(),
       toResponse: vi.fn(),
+      reissueAttempt: vi.fn(),
     };
     transactionHost = { withTransaction: vi.fn((fn) => fn()) };
 
@@ -78,8 +81,75 @@ describe('AuthService', () => {
   });
 
   describe('resend', () => {
+    const attemptId: string = 'attempt-id';
+    const method: 'otp' | 'magic_link' = 'otp';
+    const secret: string = 'plain-secret';
+    const email = 'testemail@gmail.com';
+    const storedEmail = 'Stored.Email@gmail.com';
+    const response: ConfirmationRequiredResponse = {
+      confirmationRequired: true,
+      method,
+      attemptId,
+      expiresInSeconds: 600,
+      resendAfterSeconds: 60,
+    };
+    beforeEach(() => {
+      usersRepository.getUserByEmail.mockResolvedValue({
+        id: userId,
+        email: storedEmail,
+        status: 'pending',
+      } as User);
+      confirmationService.reissueAttempt.mockResolvedValue({
+        attemptId,
+        method,
+        secret,
+      });
+      confirmationService.toResponse.mockReturnValue(response);
+    });
+
     afterEach(() => {
       vi.restoreAllMocks();
+    });
+
+    it('sends a new secret to the stored email and returns attempt info', async () => {
+      const res = await service.resend({ email });
+      expect(confirmationService.sendEmail).toHaveBeenCalledWith({
+        email: storedEmail,
+        method,
+        secret,
+        attemptId,
+      });
+      expect(usersRepository.getUserByEmail).toHaveBeenCalledWith(email);
+      expect(confirmationService.reissueAttempt).toHaveBeenCalledWith(userId);
+      expect(confirmationService.toResponse).toHaveBeenCalledWith(
+        method,
+        attemptId,
+      );
+      expect(res).toBe(response);
+    });
+
+    it('reissueAttempt should be called before sendEmail method', async () => {
+      await service.resend({ email });
+      const [reissueOrder] =
+        confirmationService.reissueAttempt.mock.invocationCallOrder;
+      const [sendOrder] =
+        confirmationService.sendEmail.mock.invocationCallOrder;
+
+      expect(reissueOrder).toBeLessThan(sendOrder);
+    });
+
+    it('rejects with the cooldown error without sending email', async () => {
+      const cooldownError = new HttpException('cooldown', 429);
+      confirmationService.reissueAttempt.mockRejectedValue(cooldownError);
+      await expect(service.resend({ email })).rejects.toBe(cooldownError);
+      expect(confirmationService.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('rethrows the mailer error without building a response', async () => {
+      const sendEmailError = new ServiceUnavailableException();
+      confirmationService.sendEmail.mockRejectedValue(sendEmailError);
+      await expect(service.resend({ email })).rejects.toBe(sendEmailError);
+      expect(confirmationService.toResponse).not.toHaveBeenCalled();
     });
 
     it.each([
