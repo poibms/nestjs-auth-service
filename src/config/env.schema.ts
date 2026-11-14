@@ -2,7 +2,7 @@ import z from 'zod';
 
 export const envSchema = z.object({
   DATABASE_URL: z.url(),
-  BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(12),
+  BCRYPT_ROUNDS: z.coerce.number().int().min(12).max(15).default(12),
   REGISTRATION_CONFIRMATION_ENABLED: z.stringbool().default(false),
   REGISTRATION_CONFIRMATION_METHOD: z
     .enum(['otp', 'magic_link'])
